@@ -369,6 +369,13 @@ class LiveVibrationMonitor:
         # Set initial button label
         self.status_button_label = 'Show Historical' if self.show_status else 'Show Status'
         
+    def update_button_label(self):
+        """Ensure button label reflects current state"""
+        if hasattr(self, 'status_button'):
+            new_label = 'Show Historical' if self.show_status else 'Show Status'
+            self.status_button.label.set_text(new_label)
+            print(f"DEBUG: Button label updated to '{new_label}' (show_status={self.show_status})", flush=True)
+        
     def load_baseline_data(self):
         """Load historical vibration data for comparison"""
         try:
@@ -415,7 +422,9 @@ class LiveVibrationMonitor:
         self.status_text_top = self.fig.text(0.5, 0.97, f'Data Source: {self.data_source_status}', ha='center', va='top', fontsize=12, color='blue')
         # Add buttons along the top (smaller height)
         ax_status = self.fig.add_axes([0.05, 0.92, 0.15, 0.04])
-        self.status_button = Button(ax_status, self.status_button_label, color='gray', hovercolor='orange')
+        # Ensure button label reflects current state
+        initial_label = 'Show Historical' if self.show_status else 'Show Status'
+        self.status_button = Button(ax_status, initial_label, color='gray', hovercolor='orange')
         self.status_button.on_clicked(self.on_toggle_status)
         ax_capture = self.fig.add_axes([0.22, 0.92, 0.15, 0.04])
         self.capture_button = Button(ax_capture, 'Capture Test Data', color='gray', hovercolor='orange')
@@ -442,6 +451,8 @@ class LiveVibrationMonitor:
                                              transform=ax4.transAxes, color='purple', fontweight='bold')
         # Initialize historical plot elements (initially hidden)
         self.historical_elements = {}
+        # Note: Historical elements are now handled directly in update_lower_right()
+        # These are kept for compatibility but not actively used
         self.historical_elements['title'] = ax4.text(0.5, 0.95, 'Historical Vibration Log (One Point Per Run)', 
                                                     fontsize=12, fontweight='bold', ha='center', va='top',
                                                     transform=ax4.transAxes, color='black', visible=False)
@@ -449,6 +460,10 @@ class LiveVibrationMonitor:
                                                          transform=ax4.transAxes, color='red', visible=False)
         # Initialize historical plot lines (empty initially)
         self.historical_lines = {'mean': None, 'peak': None, 'std': None}
+        
+        # Debug: Print what text elements were created
+        print(f"DEBUG: Created {len(self.lines)} text elements: {list(self.lines.keys())}", flush=True)
+        
         plt.tight_layout(rect=[0, 0, 0.98, 0.9])
         # Top-left: Live Acceleration plot
         self.lines['acc'], = self.axes[0, 0].plot([], [], 'b-', label='Acc Total')
@@ -457,6 +472,8 @@ class LiveVibrationMonitor:
         self.axes[0, 0].set_xlabel('Sample')
         self.axes[0, 0].grid(True, alpha=0.3)
         self.axes[0, 0].legend()
+        # Set initial y-axis limits for acceleration (typical range for vibration monitoring)
+        self.axes[0, 0].set_ylim(0.95, 1.25)
         # Top-right: Rolling Mean & Peak
         self.lines['mean'], = self.axes[0, 1].plot([], [], 'b-', label='Mean')
         self.lines['peak'], = self.axes[0, 1].plot([], [], 'y-', label='Peak')
@@ -465,6 +482,8 @@ class LiveVibrationMonitor:
         self.axes[0, 1].set_xlabel('Window')
         self.axes[0, 1].grid(True, alpha=0.3)
         self.axes[0, 1].legend()
+        # Set initial y-axis limits for mean & peak
+        self.axes[0, 1].set_ylim(0.95, 1.25)
         # Bottom-left: Rolling Std Dev
         self.lines['std'], = self.axes[1, 0].plot([], [], 'r-', label='Std Dev')
         self.axes[1, 0].set_title('Rolling Std Dev')
@@ -472,12 +491,19 @@ class LiveVibrationMonitor:
         self.axes[1, 0].set_xlabel('Window')
         self.axes[1, 0].grid(True, alpha=0.3)
         self.axes[1, 0].legend()
+        # Set initial y-axis limits for std dev (typically smaller range)
+        self.axes[1, 0].set_ylim(0.0, 0.1)
 
     def on_toggle_status(self, event):
         self.show_status = not self.show_status
-        self.status_button.label.set_text('Show Historical' if self.show_status else 'Show Status')
+        print(f"DEBUG: Toggle button clicked - switching to show_status={self.show_status}", flush=True)
+        # Update button label to show what view you can switch TO
+        self.update_button_label()
+        # Force a complete update of the lower right panel
         self.update_lower_right()
-        self.fig.canvas.draw_idle()
+        # Force a redraw to ensure all elements are properly displayed
+        self.fig.canvas.draw()
+        print(f"DEBUG: Toggle completed - show_status={self.show_status}", flush=True)
 
     def on_capture_test_data(self, event):
         if not self.capturing_test:
@@ -501,16 +527,28 @@ class LiveVibrationMonitor:
 
     def update_lower_right(self):
         ax = self.axes[1, 1]
+        
         if self.show_status:
+            # STATUS PANEL
             ax.set_title('Status & Alerts', fontweight='bold')
             ax.axis('off')
-            # Hide historical elements
+            
+            # Hide all historical elements
             for key in self.historical_elements:
                 self.historical_elements[key].set_visible(False)
-            # Show status fields
+            
+            # Show and update status fields
             for key in ['status_text', 'current_val', 'baseline_diff', 'alert', 'device_info', 'packet_count']:
-                self.lines[key].set_visible(True)
+                if key in self.lines:
+                    self.lines[key].set_visible(True)
+                    print(f"DEBUG: Made {key} visible", flush=True)
+                else:
+                    print(f"DEBUG: Warning - {key} not found in self.lines", flush=True)
+            
+            print(f"DEBUG: Status panel mode - acc_total length: {len(self.acc_total)}", flush=True)
+            
             print(f"DEBUG: update_lower_right - acc_total length: {len(self.acc_total)}", flush=True)
+            
             if len(self.acc_total) > 0:
                 # Update status text fields
                 recent_acc = list(self.acc_total)[-30:]
@@ -518,68 +556,124 @@ class LiveVibrationMonitor:
                 current_peak = np.max(recent_acc)
                 current_std = np.std(recent_acc)
                 print(f"DEBUG: update_lower_right - recent_acc: {len(recent_acc)} points, mean={current_mean:.3f}, peak={current_peak:.3f}", flush=True)
-                self.lines['current_val'].set_text(
-                    f"Current Mean: {current_mean:.3f}g\nCurrent Peak: {current_peak:.3f}g")
+                
+                if 'current_val' in self.lines:
+                    current_text = f"Current Mean: {current_mean:.3f}g\nCurrent Peak: {current_peak:.3f}g"
+                    self.lines['current_val'].set_text(current_text)
+                    print(f"DEBUG: Set current_val to: {current_text}", flush=True)
+                
                 baseline = 1.01
                 diff = current_mean - baseline
                 diff_percent = (diff / baseline) * 100
-                self.lines['baseline_diff'].set_text(f"vs Idle (1.01g): {diff:+.3f}g ({diff_percent:+.1f}%)")
+                if 'baseline_diff' in self.lines:
+                    baseline_text = f"vs Idle (1.01g): {diff:+.3f}g ({diff_percent:+.1f}%)"
+                    self.lines['baseline_diff'].set_text(baseline_text)
+                    print(f"DEBUG: Set baseline_diff to: {baseline_text}", flush=True)
+                
                 # Device info
                 devinfo = f"Device: {self.device_name or 'N/A'}\nMAC: {self.device_mac or 'N/A'}"
-                self.lines['device_info'].set_text(devinfo)
-                self.lines['packet_count'].set_text(f"Packets: {self.packet_count}")
+                if 'device_info' in self.lines:
+                    self.lines['device_info'].set_text(devinfo)
+                    print(f"DEBUG: Set device_info to: {devinfo}", flush=True)
+                if 'packet_count' in self.lines:
+                    packet_text = f"Packets: {self.packet_count}"
+                    self.lines['packet_count'].set_text(packet_text)
+                    print(f"DEBUG: Set packet_count to: {packet_text}", flush=True)
+                
                 # Alert logic
-                if current_mean > 1.23:
-                    self.lines['alert'].set_text("ALERT: Vibration High!")
-                    self.lines['alert'].set_color('red')
-                elif current_mean > 1.03:
-                    self.lines['alert'].set_text("Warning: Above Cruise")
-                    self.lines['alert'].set_color('orange')
-                else:
-                    self.lines['alert'].set_text("")
-                    self.lines['alert'].set_color('black')
-                self.lines['status_text'].set_text("")
-                self.lines['status_text'].set_color('black')
+                if 'alert' in self.lines:
+                    if current_mean > 1.23:
+                        self.lines['alert'].set_text("ALERT: Vibration High!")
+                        self.lines['alert'].set_color('red')
+                    elif current_mean > 1.03:
+                        self.lines['alert'].set_text("Warning: Above Cruise")
+                        self.lines['alert'].set_color('orange')
+                    else:
+                        self.lines['alert'].set_text("")
+                        self.lines['alert'].set_color('black')
+                
+                if 'status_text' in self.lines:
+                    self.lines['status_text'].set_text("")
+                    self.lines['status_text'].set_color('black')
                 print(f"DEBUG: Status panel updated: mean={current_mean:.3f}, peak={current_peak:.3f}", flush=True)
             else:
                 # Not connected yet
                 print("DEBUG: update_lower_right - no data, showing 'Connecting...'", flush=True)
-                self.lines['current_val'].set_text("")
-                self.lines['baseline_diff'].set_text("")
-                self.lines['device_info'].set_text("")
-                self.lines['packet_count'].set_text("")
-                self.lines['alert'].set_text("")
-                self.lines['alert'].set_color('black')
-                self.lines['status_text'].set_text("Connecting...")
-                self.lines['status_text'].set_color('yellow')
+                for key in ['current_val', 'baseline_diff', 'device_info', 'packet_count', 'alert']:
+                    if key in self.lines:
+                        self.lines[key].set_text("")
+                        if key == 'alert':
+                            self.lines[key].set_color('black')
+                
+                if 'status_text' in self.lines:
+                    self.lines['status_text'].set_text("Connecting...")
+                    self.lines['status_text'].set_color('orange')
                 print("DEBUG: Status panel: Connecting...", flush=True)
+                
         else:
+            # HISTORICAL PANEL
+            # Clear the entire panel first to remove any artifacts
             ax.clear()
             ax.set_title('Historical Comparison', fontweight='bold')
             ax.set_ylabel('Mean Acceleration (g)')
             ax.set_xlabel('Time')
+            ax.grid(True, alpha=0.3)
+            
+            # Hide all status fields (don't clear text, just hide)
+            for key in ['status_text', 'current_val', 'baseline_diff', 'alert', 'device_info', 'packet_count']:
+                self.lines[key].set_visible(False)
+            
+            # Hide historical text elements (we're using the plot instead)
+            for key in self.historical_elements:
+                self.historical_elements[key].set_visible(False)
+            
+            # Load and display historical data
             import pandas as pd
             log_path = 'cmd/vibration_log.csv'
             has_data = False
+            
             if os.path.exists(log_path):
-                df = pd.read_csv(log_path)
-                if not df.empty:
-                    has_data = True
-                    df['timestamp'] = pd.to_datetime(df['Timestamp'], format='ISO8601', errors='coerce')
-                    ax.plot(df['timestamp'], df['Mean Acc (g)'], 'o-', color='white', label='Historical')
-                    ax.axhline(1.01, color='blue', linestyle='--', linewidth=1, label='Idle Baseline (1.01g)')
-                    ax.axhline(1.03, color='orange', linestyle='--', linewidth=1, label='Cruise Baseline (1.03g)')
-                    ax.axhline(1.23, color='red', linestyle='--', linewidth=1, label='Warning Threshold (1.23g)')
-                    ax.legend()
+                try:
+                    df = pd.read_csv(log_path)
+                    if not df.empty and 'Timestamp' in df.columns and 'Mean Acc (g)' in df.columns:
+                        has_data = True
+                        df['timestamp'] = pd.to_datetime(df['Timestamp'], format='ISO8601', errors='coerce')
+                        # Drop rows with invalid timestamps
+                        df = df.dropna(subset=['timestamp'])
+                        
+                        if not df.empty:
+                            ax.plot(df['timestamp'], df['Mean Acc (g)'], 'o-', color='blue', 
+                                   label='Historical Data', markersize=6, linewidth=2)
+                            
+                            # Add baseline reference lines
+                            ax.axhline(1.01, color='green', linestyle='--', linewidth=1, 
+                                      label='Idle Baseline (1.01g)', alpha=0.7)
+                            ax.axhline(1.03, color='orange', linestyle='--', linewidth=1, 
+                                      label='Cruise Baseline (1.03g)', alpha=0.7)
+                            ax.axhline(1.23, color='red', linestyle='--', linewidth=1, 
+                                      label='Warning Threshold (1.23g)', alpha=0.7)
+                            
+                            # Format x-axis for better readability
+                            ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
+                            ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+                            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+                            
+                            ax.legend(loc='upper right')
+                            ax.grid(True, alpha=0.3)
+                        else:
+                            has_data = False
+                except Exception as e:
+                    print(f"Error loading historical data: {e}", flush=True)
+                    has_data = False
+            
             if not has_data:
-                ax.text(0.5, 0.5, 'No historical data available', ha='center', va='center', fontsize=14, color='red', transform=ax.transAxes)
-            # Hide status fields
-            for key in ['status_text', 'current_val', 'baseline_diff', 'alert', 'device_info', 'packet_count']:
-                self.lines[key].set_text("")
-                self.lines[key].set_visible(False)
-            # Show historical elements
-            for key in self.historical_elements:
-                self.historical_elements[key].set_visible(True)
+                # Display "No historical data available" message
+                ax.text(0.5, 0.5, 'No historical data available', 
+                       ha='center', va='center', fontsize=14, color='red', 
+                       transform=ax.transAxes, fontweight='bold')
+                ax.text(0.5, 0.4, 'Historical data will appear here\nwhen vibration logs are captured', 
+                       ha='center', va='center', fontsize=10, color='gray', 
+                       transform=ax.transAxes)
 
     def update_plot(self, frame):
         if self.replaying_test:
@@ -612,9 +706,21 @@ class LiveVibrationMonitor:
             x_data = list(range(len(recent_acc)))
             self.lines['acc'].set_data(x_data, recent_acc)
             if len(recent_acc) > 0:
-                y_min = min(recent_acc) - 0.02
-                y_max = max(recent_acc) + 0.02
-                ax_live.set_ylim(y_min, y_max)
+                # Only update y-axis limits if data exceeds current bounds
+                current_ylim = ax_live.get_ylim()
+                data_min = min(recent_acc)
+                data_max = max(recent_acc)
+                
+                # Add small margin for better visualization
+                margin = 0.02
+                new_y_min = data_min - margin
+                new_y_max = data_max + margin
+                
+                # Only update if data exceeds current bounds
+                if new_y_min < current_ylim[0] or new_y_max > current_ylim[1]:
+                    ax_live.set_ylim(new_y_min, new_y_max)
+                
+                # Set x-axis limits
                 ax_live.set_xlim(0, window)
             print(f"DEBUG: acc plot updated with {len(recent_acc)} points", flush=True)
         # --- END MAIN PLOT DATA ---
@@ -656,7 +762,20 @@ class LiveVibrationMonitor:
             self.lines['peak'].set_data(x_vals, peaks)
             if means and peaks:
                 ax_mean.set_xlim(0, window)
-                ax_mean.set_ylim(min(means + peaks) - 0.02, max(means + peaks) + 0.02)
+                
+                # Only update y-axis limits if data exceeds current bounds
+                current_ylim = ax_mean.get_ylim()
+                data_min = min(means + peaks)
+                data_max = max(means + peaks)
+                
+                # Add small margin for better visualization
+                margin = 0.02
+                new_y_min = data_min - margin
+                new_y_max = data_max + margin
+                
+                # Only update if data exceeds current bounds
+                if new_y_min < current_ylim[0] or new_y_max > current_ylim[1]:
+                    ax_mean.set_ylim(new_y_min, new_y_max)
 
         # --- ROLLING STD DEV ---
         ax_std = self.axes[1, 0]
@@ -680,7 +799,20 @@ class LiveVibrationMonitor:
             self.lines['std'].set_data(x_vals, stds)
             if stds:
                 ax_std.set_xlim(0, window)
-                ax_std.set_ylim(min(stds) - 0.01, max(stds) + 0.01)
+                
+                # Only update y-axis limits if data exceeds current bounds
+                current_ylim = ax_std.get_ylim()
+                data_min = min(stds)
+                data_max = max(stds)
+                
+                # Add small margin for better visualization
+                margin = 0.01
+                new_y_min = data_min - margin
+                new_y_max = data_max + margin
+                
+                # Only update if data exceeds current bounds
+                if new_y_min < current_ylim[0] or new_y_max > current_ylim[1]:
+                    ax_std.set_ylim(new_y_min, new_y_max)
 
         # --- PERIODIC HISTORICAL SNAPSHOT ---
         now = time.time()
@@ -916,6 +1048,8 @@ async def main():
     
     # Setup plotting
     monitor.setup_plot()
+    monitor.update_button_label()  # Ensure button label is correct after setup
+    monitor.update_lower_right()  # Initialize the lower right panel
     
     # Try to auto-connect to default device
     scan_result = await scan_devices()
@@ -970,7 +1104,15 @@ if __name__ == "__main__":
             monitor.capture_test_data()
         else:
             print(f"Test mode: Replaying {TEST_CAPTURE_FILE}", flush=True)
+        
+        # Set up test mode properly
+        monitor.replaying_test = True
+        monitor.data_source_status = 'Test Data Replay'
+        monitor.load_test_data()
+        
         monitor.setup_plot()
+        monitor.update_button_label()  # Ensure button label is correct after setup
+        monitor.update_lower_right()  # Initialize the lower right panel
         monitor.ani = animation.FuncAnimation(monitor.fig, monitor.update_plot, interval=100, blit=False)
         plt.show()
     else:
