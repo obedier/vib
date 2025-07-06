@@ -425,18 +425,18 @@ class LiveVibrationMonitor:
         ax4.set_title('Status & Alerts', fontweight='bold')
         ax4.axis('off')
         self.lines = {}
-        self.lines['status_text'] = ax4.text(0.1, 0.8, 'Connecting...', fontsize=14, 
-                                            transform=ax4.transAxes, color='yellow')
-        self.lines['current_val'] = ax4.text(0.1, 0.6, '', fontsize=12, 
-                                            transform=ax4.transAxes, color='white')
-        self.lines['baseline_diff'] = ax4.text(0.1, 0.4, '', fontsize=12, 
-                                              transform=ax4.transAxes, color='white')
-        self.lines['alert'] = ax4.text(0.1, 0.2, '', fontsize=14, fontweight='bold',
+        self.lines['status_text'] = ax4.text(0.1, 0.8, 'Connecting...', fontsize=16, 
+                                            transform=ax4.transAxes, color='orange', fontweight='bold')
+        self.lines['current_val'] = ax4.text(0.1, 0.6, '', fontsize=14, 
+                                            transform=ax4.transAxes, color='black', fontweight='bold')
+        self.lines['baseline_diff'] = ax4.text(0.1, 0.4, '', fontsize=14, 
+                                              transform=ax4.transAxes, color='black', fontweight='bold')
+        self.lines['alert'] = ax4.text(0.1, 0.2, '', fontsize=16, fontweight='bold',
                                       transform=ax4.transAxes, color='green')
-        self.lines['device_info'] = ax4.text(0.1, 0.95, '', fontsize=10, 
-                                            transform=ax4.transAxes, color='cyan')
-        self.lines['packet_count'] = ax4.text(0.1, 0.05, '', fontsize=10, 
-                                             transform=ax4.transAxes, color='magenta')
+        self.lines['device_info'] = ax4.text(0.1, 0.95, '', fontsize=12, 
+                                            transform=ax4.transAxes, color='blue', fontweight='bold')
+        self.lines['packet_count'] = ax4.text(0.1, 0.05, '', fontsize=12, 
+                                             transform=ax4.transAxes, color='purple', fontweight='bold')
         # Initialize historical plot elements (initially hidden)
         self.historical_elements = {}
         self.historical_elements['title'] = ax4.text(0.5, 0.95, 'Historical Vibration Log (One Point Per Run)', 
@@ -501,12 +501,14 @@ class LiveVibrationMonitor:
         if self.show_status:
             ax.set_title('Status & Alerts', fontweight='bold')
             ax.axis('off')
+            print(f"DEBUG: update_lower_right - acc_total length: {len(self.acc_total)}", flush=True)
             if len(self.acc_total) > 0:
                 # Update status text fields
                 recent_acc = list(self.acc_total)[-30:]
                 current_mean = np.mean(recent_acc)
                 current_peak = np.max(recent_acc)
                 current_std = np.std(recent_acc)
+                print(f"DEBUG: update_lower_right - recent_acc: {len(recent_acc)} points, mean={current_mean:.3f}, peak={current_peak:.3f}", flush=True)
                 self.lines['current_val'].set_text(
                     f"Current Mean: {current_mean:.3f}g\nCurrent Peak: {current_peak:.3f}g")
                 baseline = 1.01
@@ -532,6 +534,7 @@ class LiveVibrationMonitor:
                 print(f"DEBUG: Status panel updated: mean={current_mean:.3f}, peak={current_peak:.3f}", flush=True)
             else:
                 # Not connected yet
+                print("DEBUG: update_lower_right - no data, showing 'Connecting...'", flush=True)
                 self.lines['current_val'].set_text("")
                 self.lines['baseline_diff'].set_text("")
                 self.lines['device_info'].set_text("")
@@ -685,21 +688,8 @@ class LiveVibrationMonitor:
             self.last_snapshot_time = now
         # --- END HISTORICAL SNAPSHOT ---
         # --- STATUS PANEL ALWAYS SHOWS DETAILS ---
-        if self.show_status:
-            if len(self.acc_total) > 0:
-                recent_acc = list(self.acc_total)[-10:]
-                current_mean = np.mean(recent_acc)
-                current_peak = np.max(recent_acc)
-                current_std = np.std(recent_acc)
-                self.lines['current_val'].set_text(
-                    f"Current Mean: {current_mean:.3f}g\nCurrent Peak: {current_peak:.3f}g")
-                baseline = 1.01
-                diff = current_mean - baseline
-                diff_percent = (diff / baseline) * 100
-                self.lines['baseline_diff'].set_text(f"vs Idle (1.01g): {diff:+.3f}g ({diff_percent:+.1f}%)")
-            else:
-                self.lines['current_val'].set_text("")
-                self.lines['baseline_diff'].set_text("")
+        # REMOVED: Redundant status panel update from update_plot
+        # Status panel is now only updated in update_lower_right() below
         # --- END STATUS PANEL DETAILS ---
         self.update_lower_right()
         return self.lines.values()
