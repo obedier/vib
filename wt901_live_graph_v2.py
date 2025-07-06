@@ -529,10 +529,9 @@ class LiveVibrationMonitor:
         ax = self.axes[1, 1]
         
         if self.show_status:
-            # STATUS PANEL
+            ax.clear()  # Clear any previous plot lines, legends, or artifacts
             ax.set_title('Status & Alerts', fontweight='bold')
             ax.axis('off')
-
             # Re-create status text objects if missing (after ax.clear())
             for key, props in [
                 ('status_text', dict(x=0.1, y=0.8, s='Connecting...', fontsize=16, color='orange', fontweight='bold')),
@@ -546,7 +545,6 @@ class LiveVibrationMonitor:
                     self.lines[key] = ax.text(props['x'], props['y'], props['s'], fontsize=props['fontsize'],
                                               transform=ax.transAxes, color=props['color'], fontweight=props['fontweight'])
                     print(f"DEBUG: Re-created text object for {key}", flush=True)
-
             # Hide all historical elements
             for key in self.historical_elements:
                 self.historical_elements[key].set_visible(False)
