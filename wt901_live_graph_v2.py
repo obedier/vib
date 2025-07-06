@@ -15,9 +15,7 @@ import matplotlib.dates as mdates
 from datetime import datetime, timedelta
 from bleak import BleakScanner, BleakClient
 import warnings
-from matplotlib.widgets import Button
-import tkinter as tk
-from tkinter import simpledialog
+from matplotlib.widgets import Button, TextBox
 import argparse
 import sys
 import os
@@ -362,7 +360,7 @@ class LiveVibrationMonitor:
         self.capturing_test = False
         self.replaying_test = test_mode
         self.data_source_status = 'Live BLE Data' if not test_mode else 'Test Data Replay'
-        self.last_snapshot_time = 0  # For periodic logging
+        # Removed last_snapshot_time - no longer using automatic periodic logging
         self.reference_lines = []  # Track reference lines for live plot
         self.connected = False  # Track connection status
         
@@ -432,6 +430,9 @@ class LiveVibrationMonitor:
         ax_replay = self.fig.add_axes([0.39, 0.92, 0.15, 0.04])
         self.replay_button = Button(ax_replay, 'Replay Test Data', color='gray', hovercolor='orange')
         self.replay_button.on_clicked(self.on_replay_test_data)
+        ax_log = self.fig.add_axes([0.56, 0.92, 0.15, 0.04])
+        self.log_button = Button(ax_log, 'Log Data Point', color='lightblue', hovercolor='blue')
+        self.log_button.on_clicked(self.on_log_data_point)
         # Initialize all status text elements in lower right
         ax4 = self.axes[1, 1]
         ax4.set_title('Status & Alerts', fontweight='bold')
@@ -524,6 +525,88 @@ class LiveVibrationMonitor:
             self.test_data = []
             self.test_data_index = 0
             self.test_start_time = None
+
+    def on_log_data_point(self, event):
+        """Open dialog to log current vibration data with annotations"""
+        if len(self.acc_total) == 0:
+            print("No vibration data available to log.", flush=True)
+            return
+        
+        # Calculate current statistics
+        recent_acc = list(self.acc_total)[-30:]  # Last 30 points
+        mean_acc = np.mean(recent_acc)
+        std_dev = np.std(recent_acc)
+        peak_acc = np.max(recent_acc)
+        
+        # Show current values in console
+        print(f"\n=== Current Vibration Data ===", flush=True)
+        print(f"Mean: {mean_acc:.3f}g", flush=True)
+        print(f"Std Dev: {std_dev:.3f}g", flush=True)
+        print(f"Peak: {peak_acc:.3f}g", flush=True)
+        print(f"==============================\n", flush=True)
+        
+        # Use a simple approach - log with default values, user can edit CSV later
+        print("Logging data point with default values...", flush=True)
+        print("(You can edit the CSV file later to add RPM, speed, and comments)", flush=True)
+        
+        # Log the data point with default values
+        self.log_vibration_data(mean_acc, std_dev, peak_acc, "", "", "Live data point")
+
+    def log_vibration_data(self, mean_acc, std_dev, peak_acc, rpm=None, speed=None, comments=None):
+        """Log vibration data to CSV with annotations"""
+        timestamp = datetime.now().isoformat()
+        log_path = 'cmd/vibration_log.csv'
+        
+        # Determine status based on mean acceleration
+        if mean_acc > 1.23:
+            status = "WARNING"
+        elif mean_acc > 1.03:
+            status = "ATTENTION"
+        else:
+            status = "Normal"
+        
+        # Calculate baseline and deviation
+        baseline = 1.01  # Idle baseline
+        deviation = mean_acc - baseline
+        
+        # Create recommendation
+        if mean_acc > 1.23:
+            recommendation = "High vibration detected. Check shaft alignment and propeller balance."
+        elif mean_acc > 1.03:
+            recommendation = "Above normal cruise vibration. Monitor trend."
+        else:
+            recommendation = "Continue monitoring"
+        
+        # Prepare row data
+        row_data = [
+            timestamp,  # Timestamp
+            "",  # File (not applicable for live logging)
+            timestamp,  # File_Timestamp
+            f"{mean_acc:.3f}",  # Mean_Acc_g
+            f"{std_dev:.3f}",  # Std_Dev_g
+            f"{peak_acc:.3f}",  # Peak_Acc_g
+            rpm or "",  # RPM
+            speed or "",  # Speed_knots
+            comments or "",  # Notes
+            status,  # Status
+            f"{baseline:.2f}",  # Baseline_g
+            f"{deviation:.3f}",  # Deviation_g
+            recommendation  # Recommendation
+        ]
+        
+        # Write to CSV
+        import csv
+        write_header = not os.path.exists(log_path)
+        with open(log_path, 'a', newline='') as f:
+            writer = csv.writer(f)
+            if write_header:
+                writer.writerow(['Timestamp', 'File', 'File_Timestamp', 'Mean_Acc_g', 'Std_Dev_g', 
+                               'Peak_Acc_g', 'RPM', 'Speed_knots', 'Notes', 'Status', 'Baseline_g', 
+                               'Deviation_g', 'Recommendation'])
+            writer.writerow(row_data)
+        
+        print(f"Logged vibration data: Mean={mean_acc:.3f}g, RPM={rpm}, Speed={speed}, Comments={comments}", flush=True)
+        print(f"✓ Vibration data logged successfully! Mean: {mean_acc:.3f}g, Status: {status}", flush=True)
 
     def update_lower_right(self):
         ax = self.axes[1, 1]
@@ -628,12 +711,14 @@ class LiveVibrationMonitor:
             if os.path.exists(log_path):
                 try:
                     df = pd.read_csv(log_path)
-                    if not df.empty and 'Timestamp' in df.columns and 'Mean Acc (g)' in df.columns:
+                    print(f"DEBUG: Historical data - loaded CSV with columns: {list(df.columns)}", flush=True)
+                    print(f"DEBUG: Historical data - CSV has {len(df)} rows", flush=True)
+                    if not df.empty and 'Timestamp' in df.columns and 'Mean_Acc_g' in df.columns:
                         has_data = True
-                        df['timestamp'] = pd.to_datetime(df['Timestamp'], format='ISO8601', errors='coerce')
+                        df['timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
                         df = df.dropna(subset=['timestamp'])
                         if not df.empty:
-                            ax.plot(df['timestamp'], df['Mean Acc (g)'], 'o-', color='blue', 
+                            ax.plot(df['timestamp'], df['Mean_Acc_g'], 'o-', color='blue', 
                                    label='Historical Data', markersize=6, linewidth=2)
                             ax.axhline(1.01, color='green', linestyle='--', linewidth=1, 
                                       label='Idle Baseline (1.01g)', alpha=0.7)
@@ -798,23 +883,9 @@ class LiveVibrationMonitor:
                 if new_y_min < current_ylim[0] or new_y_max > current_ylim[1]:
                     ax_std.set_ylim(new_y_min, new_y_max)
 
-        # --- PERIODIC HISTORICAL SNAPSHOT ---
-        now = time.time()
-        if now - self.last_snapshot_time > 30 and len(self.acc_total) > 10:
-            mean = float(np.mean(self.acc_total))
-            std = float(np.std(self.acc_total))
-            peak = float(np.max(self.acc_total))
-            ts = datetime.now().isoformat()
-            log_path = 'cmd/vibration_log.csv'
-            import csv, os
-            write_header = not os.path.exists(log_path)
-            with open(log_path, 'a', newline='') as f:
-                writer = csv.writer(f)
-                if write_header:
-                    writer.writerow(['Timestamp', 'Mean Acc (g)', 'Std Dev (g)', 'Peak Acc (g)'])
-                writer.writerow([ts, mean, std, peak])
-            self.last_snapshot_time = now
-        # --- END HISTORICAL SNAPSHOT ---
+        # --- MANUAL DATA LOGGING ---
+        # Removed automatic periodic logging - now uses manual "Log Data Point" button
+        # --- END MANUAL DATA LOGGING ---
         # --- STATUS PANEL ALWAYS SHOWS DETAILS ---
         # REMOVED: Redundant status panel update from update_plot
         # Status panel is now only updated in update_lower_right() below
