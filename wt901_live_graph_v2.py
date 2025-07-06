@@ -366,6 +366,9 @@ class LiveVibrationMonitor:
         self.reference_lines = []  # Track reference lines for live plot
         self.connected = False  # Track connection status
         
+        # Set initial button label
+        self.status_button_label = 'Show Historical' if self.show_status else 'Show Status'
+        
     def load_baseline_data(self):
         """Load historical vibration data for comparison"""
         try:
@@ -412,7 +415,7 @@ class LiveVibrationMonitor:
         self.status_text_top = self.fig.text(0.5, 0.97, f'Data Source: {self.data_source_status}', ha='center', va='top', fontsize=12, color='blue')
         # Add buttons along the top (smaller height)
         ax_status = self.fig.add_axes([0.05, 0.92, 0.15, 0.04])
-        self.status_button = Button(ax_status, 'Show Status', color='gray', hovercolor='orange')
+        self.status_button = Button(ax_status, self.status_button_label, color='gray', hovercolor='orange')
         self.status_button.on_clicked(self.on_toggle_status)
         ax_capture = self.fig.add_axes([0.22, 0.92, 0.15, 0.04])
         self.capture_button = Button(ax_capture, 'Capture Test Data', color='gray', hovercolor='orange')
@@ -501,6 +504,12 @@ class LiveVibrationMonitor:
         if self.show_status:
             ax.set_title('Status & Alerts', fontweight='bold')
             ax.axis('off')
+            # Hide historical elements
+            for key in self.historical_elements:
+                self.historical_elements[key].set_visible(False)
+            # Show status fields
+            for key in ['status_text', 'current_val', 'baseline_diff', 'alert', 'device_info', 'packet_count']:
+                self.lines[key].set_visible(True)
             print(f"DEBUG: update_lower_right - acc_total length: {len(self.acc_total)}", flush=True)
             if len(self.acc_total) > 0:
                 # Update status text fields
@@ -544,28 +553,31 @@ class LiveVibrationMonitor:
                 self.lines['status_text'].set_text("Connecting...")
                 self.lines['status_text'].set_color('yellow')
                 print("DEBUG: Status panel: Connecting...", flush=True)
-            for key in ['status_text', 'current_val', 'baseline_diff', 'alert', 'device_info', 'packet_count']:
-                self.lines[key].set_visible(True)
-            for key in self.historical_elements:
-                self.historical_elements[key].set_visible(False)
         else:
             ax.clear()
-            ax.set_title('Historical Comparison', fontweight='bold')  # Only set once
+            ax.set_title('Historical Comparison', fontweight='bold')
             ax.set_ylabel('Mean Acceleration (g)')
             ax.set_xlabel('Time')
             import pandas as pd
             log_path = 'cmd/vibration_log.csv'
+            has_data = False
             if os.path.exists(log_path):
                 df = pd.read_csv(log_path)
                 if not df.empty:
+                    has_data = True
                     df['timestamp'] = pd.to_datetime(df['Timestamp'], format='ISO8601', errors='coerce')
                     ax.plot(df['timestamp'], df['Mean Acc (g)'], 'o-', color='white', label='Historical')
                     ax.axhline(1.01, color='blue', linestyle='--', linewidth=1, label='Idle Baseline (1.01g)')
                     ax.axhline(1.03, color='orange', linestyle='--', linewidth=1, label='Cruise Baseline (1.03g)')
                     ax.axhline(1.23, color='red', linestyle='--', linewidth=1, label='Warning Threshold (1.23g)')
                     ax.legend()
+            if not has_data:
+                ax.text(0.5, 0.5, 'No historical data available', ha='center', va='center', fontsize=14, color='red', transform=ax.transAxes)
+            # Hide status fields
             for key in ['status_text', 'current_val', 'baseline_diff', 'alert', 'device_info', 'packet_count']:
+                self.lines[key].set_text("")
                 self.lines[key].set_visible(False)
+            # Show historical elements
             for key in self.historical_elements:
                 self.historical_elements[key].set_visible(True)
 
