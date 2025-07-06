@@ -363,6 +363,9 @@ class LiveVibrationMonitor:
         # Removed last_snapshot_time - no longer using automatic periodic logging
         self.reference_lines = []  # Track reference lines for live plot
         self.connected = False  # Track connection status
+        self.available_devices = []  # List of discovered BLE devices
+        self.selected_device_index = 0  # Currently selected device index
+        self.mock_active = False  # Track mock device status
         
         # Set initial button label
         self.status_button_label = 'Show Historical' if self.show_status else 'Show Status'
@@ -377,10 +380,10 @@ class LiveVibrationMonitor:
     def load_baseline_data(self):
         """Load historical vibration data for comparison"""
         try:
-            if pd.io.common.file_exists('cmd/vibration_log.csv'):
-                df = pd.read_csv('cmd/vibration_log.csv')
+            if pd.io.common.file_exists('vibration_log.csv'):  # Fixed: Use correct path
+                df = pd.read_csv('vibration_log.csv')  # Fixed: Use correct path
                 df['timestamp'] = pd.to_datetime(df['Timestamp'], format='ISO8601', errors='coerce')
-                df['mean_acc'] = df['Mean Acc (g)']
+                df['mean_acc'] = df['Mean_Acc_g']  # Fixed: Use correct column name
                 self.baseline_data = df
                 print(f"Loaded {len(df)} historical readings", flush=True)
             else:
@@ -419,27 +422,46 @@ class LiveVibrationMonitor:
         # Add data source status indicator at the top
         self.status_text_top = self.fig.text(0.5, 0.97, f'Data Source: {self.data_source_status}', ha='center', va='top', fontsize=12, color='blue')
         # Add buttons along the top (smaller height)
-        ax_status = self.fig.add_axes([0.05, 0.92, 0.15, 0.04])
+        ax_status = self.fig.add_axes([0.05, 0.85, 0.15, 0.04])
         # Ensure button label reflects current state
         initial_label = 'Show Historical' if self.show_status else 'Show Status'
         self.status_button = Button(ax_status, initial_label, color='gray', hovercolor='orange')
         self.status_button.on_clicked(self.on_toggle_status)
-        ax_capture = self.fig.add_axes([0.22, 0.92, 0.15, 0.04])
+        ax_capture = self.fig.add_axes([0.22, 0.85, 0.15, 0.04])
         self.capture_button = Button(ax_capture, 'Capture Test Data', color='gray', hovercolor='orange')
         self.capture_button.on_clicked(self.on_capture_test_data)
-        ax_replay = self.fig.add_axes([0.39, 0.92, 0.15, 0.04])
+        ax_replay = self.fig.add_axes([0.39, 0.85, 0.15, 0.04])
         self.replay_button = Button(ax_replay, 'Replay Test Data', color='gray', hovercolor='orange')
         self.replay_button.on_clicked(self.on_replay_test_data)
-        ax_log = self.fig.add_axes([0.56, 0.92, 0.15, 0.04])
+        ax_log = self.fig.add_axes([0.56, 0.85, 0.15, 0.04])
         self.log_button = Button(ax_log, 'Log Data Point', color='lightblue', hovercolor='blue')
         self.log_button.on_clicked(self.on_log_data_point)
+        
+        # Add BLE device controls - positioned more prominently
+        ax_scan = self.fig.add_axes([0.05, 0.92, 0.15, 0.06])
+        self.scan_button = Button(ax_scan, 'Scan BLE Devices', color='lightgreen', hovercolor='green')
+        self.scan_button.on_clicked(self.on_scan_devices)
+        
+        ax_connect = self.fig.add_axes([0.22, 0.92, 0.15, 0.06])
+        self.connect_button = Button(ax_connect, 'Connect', color='orange', hovercolor='red')
+        self.connect_button.on_clicked(self.on_connect_device)
+        
+        # Add device dropdown (initially disabled)
+        ax_dropdown = self.fig.add_axes([0.39, 0.92, 0.15, 0.06])
+        self.device_dropdown = Button(ax_dropdown, 'No devices found', color='lightgray', hovercolor='gray')
+        self.device_dropdown.on_clicked(self.on_device_dropdown)
+        self.device_dropdown.label.set_text('Scan for devices first')
+        
+        ax_mock = self.fig.add_axes([0.56, 0.92, 0.15, 0.06])
+        self.mock_button = Button(ax_mock, 'Mock Device', color='purple', hovercolor='pink')
+        self.mock_button.on_clicked(self.on_mock_device)
         # Initialize all status text elements in lower right
         ax4 = self.axes[1, 1]
         ax4.set_title('Status & Alerts', fontweight='bold')
         ax4.axis('off')
         self.lines = {}
-        self.lines['status_text'] = ax4.text(0.1, 0.8, 'Connecting...', fontsize=16, 
-                                            transform=ax4.transAxes, color='orange', fontweight='bold')
+        self.lines['status_text'] = ax4.text(0.1, 0.8, 'Waiting for connection...', fontsize=16, 
+                                            transform=ax4.transAxes, color='blue', fontweight='bold')
         self.lines['current_val'] = ax4.text(0.1, 0.6, '', fontsize=14, 
                                             transform=ax4.transAxes, color='black', fontweight='bold')
         self.lines['baseline_diff'] = ax4.text(0.1, 0.4, '', fontsize=14, 
@@ -464,8 +486,23 @@ class LiveVibrationMonitor:
         
         # Debug: Print what text elements were created
         print(f"DEBUG: Created {len(self.lines)} text elements: {list(self.lines.keys())}", flush=True)
+        print("DEBUG: BLE control buttons created:", flush=True)
+        print(f"  - Scan button: {self.scan_button}", flush=True)
+        print(f"  - Connect button: {self.connect_button}", flush=True)
+        print(f"  - Device dropdown: {self.device_dropdown}", flush=True)
+        print(f"  - Mock button: {self.mock_button}", flush=True)
         
-        plt.tight_layout(rect=[0, 0, 0.98, 0.9])
+        # Test button functionality
+        print("DEBUG: Testing button event handlers...", flush=True)
+        print(f"DEBUG: Matplotlib backend: {plt.get_backend()}", flush=True)
+        try:
+            # Test if buttons are properly connected
+            print(f"  - Scan button connected: {hasattr(self.scan_button, '_observers')}", flush=True)
+            print(f"  - Device dropdown connected: {hasattr(self.device_dropdown, '_observers')}", flush=True)
+        except Exception as e:
+            print(f"  - Button test error: {e}", flush=True)
+        
+        plt.tight_layout(rect=[0, 0, 0.98, 0.8])
         # Top-left: Live Acceleration plot
         self.lines['acc'], = self.axes[0, 0].plot([], [], 'b-', label='Acc Total')
         self.axes[0, 0].set_title('Live Acceleration (g)')
@@ -528,6 +565,9 @@ class LiveVibrationMonitor:
 
     def on_log_data_point(self, event):
         """Open dialog to log current vibration data with annotations"""
+        print("DEBUG: Log data point button clicked", flush=True)
+        print(f"DEBUG: acc_total length: {len(self.acc_total)}", flush=True)
+        
         if len(self.acc_total) == 0:
             print("No vibration data available to log.", flush=True)
             return
@@ -545,17 +585,93 @@ class LiveVibrationMonitor:
         print(f"Peak: {peak_acc:.3f}g", flush=True)
         print(f"==============================\n", flush=True)
         
-        # Use a simple approach - log with default values, user can edit CSV later
-        print("Logging data point with default values...", flush=True)
-        print("(You can edit the CSV file later to add RPM, speed, and comments)", flush=True)
+        # Create simple input dialog using matplotlib widgets
+        self.create_log_dialog(mean_acc, std_dev, peak_acc)
+    
+    def create_log_dialog(self, mean_acc, std_dev, peak_acc):
+        """Create a simple dialog for user input"""
+        # Create a new figure for the dialog
+        dialog_fig, dialog_axes = plt.subplots(1, 1, figsize=(8, 6))
+        dialog_fig.suptitle('Log Vibration Data Point', fontsize=14, fontweight='bold')
         
-        # Log the data point with default values
-        self.log_vibration_data(mean_acc, std_dev, peak_acc, "", "", "Live data point")
+        # Display current values
+        dialog_axes.text(0.1, 0.8, f'Current Mean: {mean_acc:.3f}g', fontsize=12, transform=dialog_axes.transAxes)
+        dialog_axes.text(0.1, 0.7, f'Current Std Dev: {std_dev:.3f}g', fontsize=12, transform=dialog_axes.transAxes)
+        dialog_axes.text(0.1, 0.6, f'Current Peak: {peak_acc:.3f}g', fontsize=12, transform=dialog_axes.transAxes)
+        
+        # Create text input boxes
+        rpm_ax = dialog_fig.add_axes([0.2, 0.4, 0.6, 0.08])
+        rpm_textbox = TextBox(rpm_ax, 'RPM:', initial='')
+        
+        speed_ax = dialog_fig.add_axes([0.2, 0.25, 0.6, 0.08])
+        speed_textbox = TextBox(speed_ax, 'Speed (knots):', initial='')
+        
+        comments_ax = dialog_fig.add_axes([0.2, 0.1, 0.6, 0.08])
+        comments_textbox = TextBox(comments_ax, 'Comments:', initial='Live data point')
+        
+        # Create buttons
+        log_ax = dialog_fig.add_axes([0.3, 0.02, 0.2, 0.06])
+        log_button = Button(log_ax, 'Log Data', color='lightgreen')
+        
+        cancel_ax = dialog_fig.add_axes([0.55, 0.02, 0.2, 0.06])
+        cancel_button = Button(cancel_ax, 'Cancel', color='lightcoral')
+        
+        # Store references for the callback
+        self.dialog_data = {
+            'rpm_textbox': rpm_textbox,
+            'speed_textbox': speed_textbox,
+            'comments_textbox': comments_textbox,
+            'mean_acc': mean_acc,
+            'std_dev': std_dev,
+            'peak_acc': peak_acc,
+            'dialog_fig': dialog_fig
+        }
+        
+        # Set up button callbacks
+        log_button.on_clicked(self.on_log_dialog_submit)
+        cancel_button.on_clicked(self.on_log_dialog_cancel)
+        
+        dialog_axes.axis('off')
+        plt.show()
+    
+    def on_log_dialog_submit(self, event):
+        """Handle log dialog submit"""
+        if self.dialog_data is None:
+            return
+            
+        rpm = self.dialog_data['rpm_textbox'].text
+        speed = self.dialog_data['speed_textbox'].text
+        comments = self.dialog_data['comments_textbox'].text
+        
+        mean_acc = self.dialog_data['mean_acc']
+        std_dev = self.dialog_data['std_dev']
+        peak_acc = self.dialog_data['peak_acc']
+        
+        # Close the dialog
+        plt.close(self.dialog_data['dialog_fig'])
+        
+        # Log the data
+        self.log_vibration_data(mean_acc, std_dev, peak_acc, rpm, speed, comments)
+        
+        # Clear dialog data
+        self.dialog_data = None
+    
+    def on_log_dialog_cancel(self, event):
+        """Handle log dialog cancel"""
+        if self.dialog_data is None:
+            return
+            
+        # Close the dialog
+        plt.close(self.dialog_data['dialog_fig'])
+        
+        # Clear dialog data
+        self.dialog_data = None
+        print("Logging cancelled", flush=True)
 
     def log_vibration_data(self, mean_acc, std_dev, peak_acc, rpm=None, speed=None, comments=None):
         """Log vibration data to CSV with annotations"""
         timestamp = datetime.now().isoformat()
-        log_path = 'cmd/vibration_log.csv'
+        log_path = 'vibration_log.csv'  # Fixed: Use correct path in root directory
         
         # Determine status based on mean acceleration
         if mean_acc > 1.23:
@@ -608,6 +724,180 @@ class LiveVibrationMonitor:
         print(f"Logged vibration data: Mean={mean_acc:.3f}g, RPM={rpm}, Speed={speed}, Comments={comments}", flush=True)
         print(f"✓ Vibration data logged successfully! Mean: {mean_acc:.3f}g, Status: {status}", flush=True)
 
+    def on_scan_devices(self, event):
+        """Scan for available BLE devices"""
+        print("DEBUG: Scan button clicked!", flush=True)
+        print("Scanning for BLE devices...", flush=True)
+        self.scan_button.label.set_text('Scanning...')
+        
+        # Run scan in background thread
+        def scan_thread():
+            try:
+                scan_result = asyncio.run(scan_devices())
+                if scan_result is not None:
+                    wt901_devices, default_device = scan_result
+                    # Extract just the device objects from the tuples
+                    self.available_devices = [device for _, device in wt901_devices]
+                    print(f"Found {len(self.available_devices)} devices:", flush=True)
+                    for i, device in enumerate(self.available_devices):
+                        print(f"  {i+1}. {device.name} ({device.address})", flush=True)
+                    
+                    # Update scan button and dropdown
+                    self.scan_button.label.set_text(f'Found {len(self.available_devices)} Devices')
+                    if self.available_devices:
+                        # Update dropdown with first device selected
+                        self.selected_device_index = 0
+                        device = self.available_devices[0]
+                        self.device_dropdown.label.set_text(f'{device.name} ({device.address[:8]}...)')
+                        self.device_dropdown.color = 'lightblue'
+                        self.connect_button.color = 'orange'
+                    else:
+                        self.device_dropdown.label.set_text('No devices found')
+                        self.device_dropdown.color = 'lightgray'
+                        self.connect_button.color = 'lightgray'
+                else:
+                    print("No devices found", flush=True)
+                    self.scan_button.label.set_text('No Devices Found')
+                    self.device_dropdown.label.set_text('No devices found')
+                    self.device_dropdown.color = 'lightgray'
+                    self.connect_button.color = 'lightgray'
+            except Exception as e:
+                print(f"Scan error: {e}", flush=True)
+                self.scan_button.label.set_text('Scan Failed')
+                self.device_dropdown.label.set_text('Scan failed')
+                self.device_dropdown.color = 'lightgray'
+        
+        threading.Thread(target=scan_thread, daemon=True).start()
+
+    def on_connect_device(self, event):
+        """Connect to selected BLE device"""
+        if not hasattr(self, 'available_devices') or not self.available_devices:
+            print("No devices available. Please scan first.", flush=True)
+            return
+        
+        # Connect to currently selected device
+        device = self.available_devices[self.selected_device_index]
+        print(f"Connecting to {device.name} ({device.address})...", flush=True)
+        self.connect_button.label.set_text('Connecting...')
+        
+        # Stop any existing connection
+        self.stop_ble_thread()
+        
+        # Start new connection
+        self.start_ble_thread(device)
+        self.connect_button.label.set_text('Disconnect')
+        self.data_source_status = f'Connected: {device.name}'
+        self.update_data_source_status()
+
+    def on_device_dropdown(self, event):
+        """Handle device dropdown selection"""
+        print("DEBUG: Device dropdown clicked!", flush=True)
+        if not self.available_devices:
+            print("No devices available. Please scan first.", flush=True)
+            return
+        
+        # Cycle through available devices
+        self.selected_device_index = (self.selected_device_index + 1) % len(self.available_devices)
+        device = self.available_devices[self.selected_device_index]
+        
+        # Update dropdown display
+        self.device_dropdown.label.set_text(f'{device.name} ({device.address[:8]}...)')
+        print(f"Selected device: {device.name} ({device.address})", flush=True)
+
+    def on_mock_device(self, event):
+        """Toggle mock device on/off with pre-recorded data"""
+        if not hasattr(self, 'mock_active') or not self.mock_active:
+            # Start mock device
+            print("Starting mock device...", flush=True)
+            self.mock_button.label.set_text('Disconnect Mock')
+            self.mock_button.color = 'red'
+            
+            # Stop any existing connection
+            self.stop_ble_thread()
+            
+            # Start mock device
+            self.start_mock_device()
+            self.data_source_status = 'Mock Device (Pre-recorded Data)'
+            self.update_data_source_status()
+        else:
+            # Stop mock device
+            print("Stopping mock device...", flush=True)
+            self.mock_button.label.set_text('Mock Device')
+            self.mock_button.color = 'purple'
+            
+            # Stop mock device
+            self.stop_ble_thread()
+            self.data_source_status = 'Waiting for connection...'
+            self.update_data_source_status()
+
+    def start_mock_device(self):
+        """Start mock device that replays pre-recorded data"""
+        def mock_thread():
+            try:
+                # Load pre-recorded data
+                mock_data_file = 'mock_vibration_data.json'
+                if not os.path.exists(mock_data_file):
+                    print(f"Creating mock data file: {mock_data_file}", flush=True)
+                    self.create_mock_data(mock_data_file)
+                
+                with open(mock_data_file, 'r') as f:
+                    mock_data = json.load(f)
+                
+                print(f"Loaded {len(mock_data)} mock data points", flush=True)
+                
+                # Replay data in loop
+                index = 0
+                while hasattr(self, 'mock_active') and self.mock_active:
+                    if index >= len(mock_data):
+                        index = 0  # Loop back to start
+                    
+                    data_point = mock_data[index]
+                    
+                    # Send data through messenger
+                    self.messenger.save_data_batch([data_point])
+                    
+                    index += 1
+                    time.sleep(0.1)  # 10 Hz replay rate
+                    
+            except Exception as e:
+                print(f"Mock device error: {e}", flush=True)
+        
+        self.mock_active = True
+        threading.Thread(target=mock_thread, daemon=True).start()
+
+    def create_mock_data(self, filename):
+        """Create realistic mock vibration data"""
+        import random
+        
+        # Create 1000 data points with realistic vibration patterns
+        mock_data = []
+        base_time = time.time()
+        
+        for i in range(1000):
+            # Simulate realistic vibration with some variation
+            base_acc = 1.01 + 0.02 * np.sin(i * 0.1)  # Slow oscillation
+            noise = random.uniform(-0.01, 0.01)  # Small random noise
+            acc_total = base_acc + noise
+            
+            # Calculate individual axes (simplified)
+            acc_x = random.uniform(-0.1, -0.09)
+            acc_y = random.uniform(-0.08, -0.07)
+            acc_z = acc_total - 0.01  # Adjust to match total
+            
+            data_point = {
+                'timestamp': datetime.fromtimestamp(base_time + i * 0.1).isoformat(),
+                'acc_x': acc_x,
+                'acc_y': acc_y,
+                'acc_z': acc_z,
+                'acc_total': acc_total
+            }
+            mock_data.append(data_point)
+        
+        with open(filename, 'w') as f:
+            json.dump(mock_data, f, indent=2)
+        
+        print(f"Created mock data file: {filename} with {len(mock_data)} points", flush=True)
+
     def update_lower_right(self):
         ax = self.axes[1, 1]
         
@@ -627,7 +917,11 @@ class LiveVibrationMonitor:
                 if key not in self.lines or self.lines[key] not in ax.texts:
                     self.lines[key] = ax.text(props['x'], props['y'], props['s'], fontsize=props['fontsize'],
                                               transform=ax.transAxes, color=props['color'], fontweight=props['fontweight'])
-                    print(f"DEBUG: Re-created text object for {key}", flush=True)
+                    # Only print debug for text creation occasionally, and not in slow animation mode
+                    if (not hasattr(self, '_slow_animation_mode') or not self._slow_animation_mode) and \
+                       (not hasattr(self, '_last_text_creation_time') or time.time() - self._last_text_creation_time > 2.0):
+                        print(f"DEBUG: Re-created text objects for status panel", flush=True)
+                        self._last_text_creation_time = time.time()
             # Hide all historical elements
             for key in self.historical_elements:
                 self.historical_elements[key].set_visible(False)
@@ -635,38 +929,57 @@ class LiveVibrationMonitor:
             for key in ['status_text', 'current_val', 'baseline_diff', 'alert', 'device_info', 'packet_count']:
                 if key in self.lines:
                     self.lines[key].set_visible(True)
-                    print(f"DEBUG: Made {key} visible", flush=True)
                 else:
                     print(f"DEBUG: Warning - {key} not found in self.lines", flush=True)
-            print(f"DEBUG: Status panel mode - acc_total length: {len(self.acc_total)}", flush=True)
-            print(f"DEBUG: update_lower_right - acc_total length: {len(self.acc_total)}", flush=True)
+            
+            # Only print status panel debug info occasionally, and not in slow animation mode
+            if (not hasattr(self, '_slow_animation_mode') or not self._slow_animation_mode) and \
+               (not hasattr(self, '_last_status_debug_time') or time.time() - self._last_status_debug_time > 3.0):
+                print(f"DEBUG: Status panel mode - acc_total length: {len(self.acc_total)}", flush=True)
+                self._last_status_debug_time = time.time()
             if len(self.acc_total) > 0:
                 # Update status text fields
                 recent_acc = list(self.acc_total)[-30:]
                 current_mean = np.mean(recent_acc)
                 current_peak = np.max(recent_acc)
                 current_std = np.std(recent_acc)
-                print(f"DEBUG: update_lower_right - recent_acc: {len(recent_acc)} points, mean={current_mean:.3f}, peak={current_peak:.3f}", flush=True)
+                
+                # Only print detailed status updates occasionally when connected
+                should_print_status = (not hasattr(self, '_last_status_update_time') or 
+                                     time.time() - self._last_status_update_time > 2.0)
+                
+                if should_print_status:
+                    print(f"DEBUG: update_lower_right - recent_acc: {len(recent_acc)} points, mean={current_mean:.3f}, peak={current_peak:.3f}", flush=True)
+                    self._last_status_update_time = time.time()
+                
                 if 'current_val' in self.lines:
                     current_text = f"Current Mean: {current_mean:.3f}g\nCurrent Peak: {current_peak:.3f}g"
                     self.lines['current_val'].set_text(current_text)
-                    print(f"DEBUG: Set current_val to: {current_text}", flush=True)
+                    if should_print_status:
+                        print(f"DEBUG: Set current_val to: {current_text}", flush=True)
+                
                 baseline = 1.01
                 diff = current_mean - baseline
                 diff_percent = (diff / baseline) * 100
                 if 'baseline_diff' in self.lines:
                     baseline_text = f"vs Idle (1.01g): {diff:+.3f}g ({diff_percent:+.1f}%)"
                     self.lines['baseline_diff'].set_text(baseline_text)
-                    print(f"DEBUG: Set baseline_diff to: {baseline_text}", flush=True)
+                    if should_print_status:
+                        print(f"DEBUG: Set baseline_diff to: {baseline_text}", flush=True)
+                
                 # Device info
                 devinfo = f"Device: {self.device_name or 'N/A'}\nMAC: {self.device_mac or 'N/A'}"
                 if 'device_info' in self.lines:
                     self.lines['device_info'].set_text(devinfo)
-                    print(f"DEBUG: Set device_info to: {devinfo}", flush=True)
+                    if should_print_status:
+                        print(f"DEBUG: Set device_info to: {devinfo}", flush=True)
+                
                 if 'packet_count' in self.lines:
                     packet_text = f"Packets: {self.packet_count}"
                     self.lines['packet_count'].set_text(packet_text)
-                    print(f"DEBUG: Set packet_count to: {packet_text}", flush=True)
+                    if should_print_status:
+                        print(f"DEBUG: Set packet_count to: {packet_text}", flush=True)
+                
                 # Alert logic
                 if 'alert' in self.lines:
                     if current_mean > 1.23:
@@ -678,22 +991,38 @@ class LiveVibrationMonitor:
                     else:
                         self.lines['alert'].set_text("")
                         self.lines['alert'].set_color('black')
+                
                 if 'status_text' in self.lines:
                     self.lines['status_text'].set_text("")
                     self.lines['status_text'].set_color('black')
-                print(f"DEBUG: Status panel updated: mean={current_mean:.3f}, peak={current_peak:.3f}", flush=True)
+                
+                if should_print_status:
+                    print(f"DEBUG: Status panel updated: mean={current_mean:.3f}, peak={current_peak:.3f}", flush=True)
             else:
                 # Not connected yet
-                print("DEBUG: update_lower_right - no data, showing 'Connecting...'", flush=True)
+                # Only print "no data" message occasionally, and not in slow animation mode
+                if (not hasattr(self, '_slow_animation_mode') or not self._slow_animation_mode) and \
+                   (not hasattr(self, '_last_no_data_status_time') or time.time() - self._last_no_data_status_time > 5.0):
+                    print("DEBUG: update_lower_right - no data, showing 'Waiting for connection...'", flush=True)
+                    self._last_no_data_status_time = time.time()
+                
                 for key in ['current_val', 'baseline_diff', 'device_info', 'packet_count', 'alert']:
                     if key in self.lines:
-                        self.lines[key].set_text("")
+                        if key == 'current_val':
+                            self.lines[key].set_text("Click 'Scan BLE Devices' to start")
+                        else:
+                            self.lines[key].set_text("")
                         if key == 'alert':
                             self.lines[key].set_color('black')
                 if 'status_text' in self.lines:
-                    self.lines['status_text'].set_text("Connecting...")
-                    self.lines['status_text'].set_color('orange')
-                print("DEBUG: Status panel: Connecting...", flush=True)
+                    self.lines['status_text'].set_text("Waiting for connection...")
+                    self.lines['status_text'].set_color('blue')
+                
+                # Only print status message occasionally, and not in slow animation mode
+                if (not hasattr(self, '_slow_animation_mode') or not self._slow_animation_mode) and \
+                   (not hasattr(self, '_last_status_message_time') or time.time() - self._last_status_message_time > 5.0):
+                    print("DEBUG: Status panel: Waiting for connection...", flush=True)
+                    self._last_status_message_time = time.time()
         else:
             # HISTORICAL PANEL
             ax.clear()
@@ -706,7 +1035,7 @@ class LiveVibrationMonitor:
             for key in self.historical_elements:
                 self.historical_elements[key].set_visible(False)
             import pandas as pd
-            log_path = 'cmd/vibration_log.csv'
+            log_path = 'vibration_log.csv'  # Fixed: Use correct path in root directory
             has_data = False
             if os.path.exists(log_path):
                 try:
@@ -755,6 +1084,24 @@ class LiveVibrationMonitor:
         self.is_connected = status.get('connected', False)
         self.device_name = status.get('device_name')
         self.device_mac = status.get('device_mac')
+        
+        # Detect disconnection and reduce update frequency
+        if not self.is_connected and len(self.acc_total) == 0:
+            # No connection and no data - reduce animation frequency to save resources
+            if not hasattr(self, '_slow_animation_mode'):
+                self._slow_animation_mode = True
+                print("DEBUG: No connection detected, switching to slow animation mode", flush=True)
+                # Adjust animation interval to 1 second when disconnected
+                if hasattr(self, 'ani') and self.ani:
+                    self.ani.event_source.interval = 1000  # 1 second
+        elif self.is_connected or len(self.acc_total) > 0:
+            # Connected or has data - use normal animation frequency
+            if hasattr(self, '_slow_animation_mode') and self._slow_animation_mode:
+                self._slow_animation_mode = False
+                print("DEBUG: Connection detected, switching to normal animation mode", flush=True)
+                # Restore normal animation interval
+                if hasattr(self, 'ani') and self.ani:
+                    self.ani.event_source.interval = 100  # 100ms
         # --- LIVE REFERENCE LINES ---
         ax_live = self.axes[0, 0]
         # Remove previous reference lines
@@ -914,12 +1261,21 @@ class LiveVibrationMonitor:
         """Load latest data from file and update local storage"""
         try:
             latest_data = self.messenger.get_latest_data(max_points=200)
-            print(f"DEBUG: load_latest_data - loaded {len(latest_data)} points from file", flush=True)
+            
+            # Only print debug info if we have data or if this is a significant change
             if latest_data:
-                print(f"DEBUG: load_latest_data - first data point: {latest_data[0]}", flush=True)
-                print(f"DEBUG: load_latest_data - last data point: {latest_data[-1]}", flush=True)
+                if not hasattr(self, '_last_data_count') or self._last_data_count != len(latest_data):
+                    print(f"DEBUG: load_latest_data - loaded {len(latest_data)} points from file", flush=True)
+                    print(f"DEBUG: load_latest_data - first data point: {latest_data[0]}", flush=True)
+                    print(f"DEBUG: load_latest_data - last data point: {latest_data[-1]}", flush=True)
+                    self._last_data_count = len(latest_data)
             else:
-                print(f"DEBUG: load_latest_data - no data loaded from file", flush=True)
+                # Only print "no data" message occasionally to reduce spam, and not in slow animation mode
+                if (not hasattr(self, '_slow_animation_mode') or not self._slow_animation_mode) and \
+                   (not hasattr(self, '_last_no_data_time') or time.time() - self._last_no_data_time > 5.0):
+                    print(f"DEBUG: load_latest_data - no data loaded from file (will suppress for 5s)", flush=True)
+                    self._last_no_data_time = time.time()
+            
             self.timestamps.clear()
             self.acc_data.clear()
             self.acc_total.clear()
@@ -937,9 +1293,16 @@ class LiveVibrationMonitor:
                 if not self.connected:
                     print("DEBUG: Connection established, data received.", flush=True)
                 self.connected = True
-            print(f"DEBUG: Processed {len(self.acc_total)} data points into local storage", flush=True)
+            elif hasattr(self, '_last_data_count') and self._last_data_count > 0:
+                print(f"DEBUG: Connection lost, no more data", flush=True)
+                self._last_data_count = 0
+            
+            # Only print processing info if we have data
             if len(self.acc_total) > 0:
-                print(f"DEBUG: Latest acc_total value: {self.acc_total[-1]:.4f}g", flush=True)
+                if not hasattr(self, '_last_processed_count') or self._last_processed_count != len(self.acc_total):
+                    print(f"DEBUG: Processed {len(self.acc_total)} data points into local storage", flush=True)
+                    print(f"DEBUG: Latest acc_total value: {self.acc_total[-1]:.4f}g", flush=True)
+                    self._last_processed_count = len(self.acc_total)
         except Exception as e:
             print(f"Error loading latest data: {e}", flush=True)
             import traceback
@@ -960,11 +1323,17 @@ class LiveVibrationMonitor:
         print("BLE thread started", flush=True)
     
     def stop_ble_thread(self):
-        """Stop BLE handler thread"""
+        """Stop BLE handler thread and mock device"""
         if self.ble_handler:
             self.ble_handler.is_running = False
         if self.ble_thread and self.ble_thread.is_alive():
             self.ble_thread.join(timeout=2)
+        
+        # Stop mock device if running
+        if hasattr(self, 'mock_active') and self.mock_active:
+            self.mock_active = False
+            print("Mock device stopped", flush=True)
+        
         print("BLE thread stopped", flush=True)
     
     def on_change_device(self, event):
@@ -1115,28 +1484,10 @@ async def main():
     monitor.update_button_label()  # Ensure button label is correct after setup
     monitor.update_lower_right()  # Initialize the lower right panel
     
-    # Try to auto-connect to default device
-    scan_result = await scan_devices()
-    devices, default_device = scan_result if scan_result else ([], None)
-    selected_device = None
-    if default_device:
-        selected_device = default_device[1]
-        print(f"Auto-connecting to default device: {selected_device.name} ({selected_device.address})", flush=True)
-    elif devices:
-        device_idx = int(input("Select device number: "))
-        for idx, device in devices:
-            if idx == device_idx:
-                selected_device = device
-                break
-    if not selected_device:
-        print("No device selected or found. Switching to test data replay mode.", flush=True)
-        monitor.replaying_test = True
-        monitor.data_source_status = 'Test Data Replay'
-        monitor.update_data_source_status()
-        monitor.load_test_data()
-    else:
-        await monitor.connect_to_device(selected_device)
-        monitor.start_ble_thread(selected_device)
+    # Don't auto-connect - wait for user to scan and connect
+    print("Ready for device connection. Click 'Scan BLE Devices' to discover sensors.", flush=True)
+    monitor.data_source_status = 'Waiting for connection...'
+    monitor.update_data_source_status()
     
     monitor.ani = animation.FuncAnimation(monitor.fig, monitor.update_plot, interval=100, blit=False)
     try:

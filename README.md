@@ -11,6 +11,9 @@ A comprehensive vibration monitoring system for the Allora yacht using WT901BLE6
 - **Batch Processing**: Analyze multiple files at once with summary reports
 - **Status Monitoring**: Provides warnings for significant deviations from baseline
 - **Drag-and-Drop Support**: Easy file processing with shell scripts
+- **Live BLE Monitoring**: Real-time vibration monitoring with WT901BLE68 sensor
+- **Device Management**: Scan, connect, and manage BLE devices dynamically
+- **Mock Device Support**: Test with pre-recorded data without physical hardware
 
 ## 🛠️ Installation
 
@@ -59,6 +62,22 @@ chmod +x vibcheck.sh
 source .venv/bin/activate
 python batch_analyze.py
 ```
+
+### Live BLE Monitoring
+```bash
+# Start live vibration monitoring
+source .venv/bin/activate
+python wt901_live_graph_v2.py
+
+# Test mode with pre-recorded data
+python wt901_live_graph_v2.py --test
+```
+
+### Device Management
+1. **Scan for Devices**: Click "Scan BLE Devices" to discover available sensors
+2. **Connect to Device**: Click "Connect" to establish BLE connection
+3. **Mock Device**: Click "Mock Device" for testing without hardware
+4. **Log Data Points**: Click "Log Data Point" to capture current statistics
 
 ## 📁 File Format
 
@@ -165,6 +184,7 @@ Results are saved to `vibration_log.csv` with columns:
 vib/
 ├── calcvib.py              # Main analysis script
 ├── batch_analyze.py        # Batch processing script
+├── wt901_live_graph_v2.py  # Live BLE monitoring dashboard
 ├── vibcheck.sh             # Shell wrapper script
 ├── setup.sh                # Environment setup
 ├── requirements.txt        # Python dependencies
