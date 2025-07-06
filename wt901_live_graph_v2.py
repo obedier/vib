@@ -358,10 +358,11 @@ class LiveVibrationMonitor:
         
         self.showing_historical = False  # Always start in live mode
         self.toggle_button = None
-        self.show_status = False  # Lower right: False=historical, True=status
+        self.show_status = True  # Status is default view
         self.capturing_test = False
         self.replaying_test = test_mode
         self.data_source_status = 'Live BLE Data' if not test_mode else 'Test Data Replay'
+        self.last_snapshot_time = 0  # For periodic logging
         
     def load_baseline_data(self):
         """Load historical vibration data for comparison"""
@@ -498,132 +499,91 @@ class LiveVibrationMonitor:
         if self.show_status:
             ax.set_title('Status & Alerts', fontweight='bold')
             ax.axis('off')
-            # Show status elements
             for key in ['status_text', 'current_val', 'baseline_diff', 'alert', 'device_info', 'packet_count']:
                 self.lines[key].set_visible(True)
-            # Hide historical elements
             for key in self.historical_elements:
                 self.historical_elements[key].set_visible(False)
-            # DO NOT touch visibility of main plot lines here
         else:
-            ax.set_title('Historical Vibration Log (One Point Per Run)', fontweight='bold')
-            ax.axis('on')
-            ax.set_ylabel('Acceleration (g)')
-            # Hide status elements
+            ax.clear()
+            ax.set_title('Historical Comparison', fontweight='bold')  # Only set once
+            ax.set_ylabel('Mean Acceleration (g)')
+            ax.set_xlabel('Time')
+            import pandas as pd
+            log_path = 'cmd/vibration_log.csv'
+            if os.path.exists(log_path):
+                df = pd.read_csv(log_path)
+                if not df.empty:
+                    df['timestamp'] = pd.to_datetime(df['Timestamp'])
+                    ax.plot(df['timestamp'], df['Mean Acc (g)'], 'o-', color='white', label='Historical')
+                    ax.axhline(1.01, color='blue', linestyle='--', linewidth=1, label='Idle Baseline (1.01g)')
+                    ax.axhline(1.03, color='orange', linestyle='--', linewidth=1, label='Cruise Baseline (1.03g)')
+                    ax.axhline(1.23, color='red', linestyle='--', linewidth=1, label='Warning Threshold (1.23g)')
+                    ax.legend()
             for key in ['status_text', 'current_val', 'baseline_diff', 'alert', 'device_info', 'packet_count']:
                 self.lines[key].set_visible(False)
-            # Show historical elements
             for key in self.historical_elements:
                 self.historical_elements[key].set_visible(True)
-            # DO NOT touch visibility of main plot lines here
 
     def update_plot(self, frame):
         if self.replaying_test:
             self.feed_test_data()
-        # Check for messages from BLE thread
         message = self.messenger.get_message()
         if message:
             self.handle_message(message)
-        
-        # Load latest data from file
         self.load_latest_data()
-        
-        # Update connection status
         status = self.messenger.get_status()
         self.is_connected = status.get('connected', False)
         self.device_name = status.get('device_name')
         self.device_mac = status.get('device_mac')
-        
-        # Update status display
-        if self.is_connected:
-            self.lines['status_text'].set_text("Status: Connected ✓")
-            self.lines['status_text'].set_color('green')
-            if self.device_name and self.device_mac:
-                self.lines['device_info'].set_text(f"Device: {self.device_name} ({self.device_mac})")
+        # --- LIVE REFERENCE LINES ---
+        ax_live = self.axes[0, 0]
+        ax_live.lines = [self.lines['acc']]  # Remove all but main line
+        idle = 1.01
+        cruise = 1.03
+        warn = 1.23
+        ax_live.axhline(idle, color='blue', linestyle='--', linewidth=1, label='Idle Baseline (1.01g)')
+        ax_live.axhline(cruise, color='orange', linestyle='--', linewidth=1, label='Cruise Baseline (1.03g)')
+        ax_live.axhline(warn, color='red', linestyle='--', linewidth=1, label='Warning Threshold (1.23g)')
+        handles, labels = ax_live.get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        ax_live.legend(by_label.values(), by_label.keys())
+        # --- END LIVE REFERENCE LINES ---
+        # ... existing code ...
+        # --- PERIODIC HISTORICAL SNAPSHOT ---
+        now = time.time()
+        if now - self.last_snapshot_time > 30 and len(self.acc_total) > 10:
+            mean = float(np.mean(self.acc_total))
+            std = float(np.std(self.acc_total))
+            peak = float(np.max(self.acc_total))
+            ts = datetime.now().isoformat()
+            log_path = 'cmd/vibration_log.csv'
+            import csv, os
+            write_header = not os.path.exists(log_path)
+            with open(log_path, 'a', newline='') as f:
+                writer = csv.writer(f)
+                if write_header:
+                    writer.writerow(['Timestamp', 'Mean Acc (g)', 'Std Dev (g)', 'Peak Acc (g)'])
+                writer.writerow([ts, mean, std, peak])
+            self.last_snapshot_time = now
+        # --- END HISTORICAL SNAPSHOT ---
+        # ... existing code ...
+        # --- STATUS PANEL ALWAYS SHOWS DETAILS ---
+        if self.show_status:
+            if len(self.acc_total) > 0:
+                recent_acc = list(self.acc_total)[-10:]
+                current_mean = np.mean(recent_acc)
+                current_peak = np.max(recent_acc)
+                current_std = np.std(recent_acc)
+                self.lines['current_val'].set_text(
+                    f"Current Mean: {current_mean:.3f}g\nCurrent Peak: {current_peak:.3f}g")
+                baseline = 1.01
+                diff = current_mean - baseline
+                diff_percent = (diff / baseline) * 100
+                self.lines['baseline_diff'].set_text(f"vs Idle (1.01g): {diff:+.3f}g ({diff_percent:+.1f}%)")
             else:
-                self.lines['device_info'].set_text("")
-        else:
-            self.lines['status_text'].set_text("Status: Disconnected ✗")
-            self.lines['status_text'].set_color('red')
-            self.lines['device_info'].set_text("")
-
-        # Update real-time acceleration plot
-        if len(self.timestamps) > 0:
-            window = min(100, len(self.timestamps))
-            # Convert deques to lists for plotting
-            recent_times = list(self.timestamps)[-window:]
-            recent_acc = list(self.acc_total)[-window:]
-            
-            # Use simple x-axis (0 to window-1) for real-time plotting
-            x_data = list(range(len(recent_acc)))
-            self.lines['acc'].set_data(x_data, recent_acc)
-            
-            # Update y-axis limits to show data properly
-            if len(recent_acc) > 0:
-                y_min = min(recent_acc) - 0.02
-                y_max = max(recent_acc) + 0.02
-                self.axes[0, 0].set_ylim(y_min, y_max)
-                self.axes[0, 0].set_xlim(0, len(recent_acc))
-                print(f"DEBUG: Updated acc plot with {len(recent_acc)} points, range: {y_min:.3f}-{y_max:.3f}g", flush=True)
-            else:
-                print(f"DEBUG: No recent_acc data to plot", flush=True)
-        else:
-            print(f"DEBUG: No timestamps data available", flush=True)
-
-        # Update rolling statistics
-        if len(self.acc_total) >= 6:
-            window = min(50, len(self.acc_total))
-            recent_data = list(self.acc_total)[-window:]
-            means = []
-            stds = []
-            peaks = []
-            for i in range(5, len(recent_data)):
-                window_data = recent_data[i-5:i+1]
-                means.append(np.mean(window_data))
-                stds.append(np.std(window_data))
-                peaks.append(np.max(window_data))
-            if means:
-                x_data = list(range(len(means)))
-                # Update mean & peak (Top Right)
-                self.lines['mean'].set_data(x_data, means)
-                self.lines['peak'].set_data(x_data, peaks)
-                self.axes[0, 1].set_xlim(0, max(1, len(means)))
-                self.axes[0, 1].set_ylim(0.8, 1.5)
-                # Update std dev (Bottom Left)
-                self.lines['std'].set_data(x_data, stds)
-                self.axes[1, 0].set_xlim(0, max(1, len(stds)))
-                self.axes[1, 0].set_ylim(0, max(0.1, max(stds) + 0.01 if stds else 0.1))
-
-        # Update status/alerts for vibration only if we have data
-        if len(self.acc_total) > 0:
-            recent_acc = list(self.acc_total)[-10:]
-            current_mean = np.mean(recent_acc)
-            current_peak = np.max(recent_acc)
-            current_std = np.std(recent_acc)
-            self.lines['current_val'].set_text(
-                f"Current Mean: {current_mean:.3f}g\nCurrent Peak: {current_peak:.3f}g\nCurrent Std Dev: {current_std:.3f}g"
-            )
-            baseline = IDLE_BASELINE
-            baseline_name = "Idle"
-            diff = current_mean - baseline
-            diff_percent = (diff / baseline) * 100
-            self.lines['baseline_diff'].set_text(f"vs {baseline_name} ({baseline}g): {diff:+.3f}g ({diff_percent:+.1f}%)")
-            if abs(diff) > WARNING_THRESHOLD:
-                self.lines['alert'].set_text("⚠️ WARNING: High vibration detected!")
-                self.lines['alert'].set_color('red')
-            elif abs(diff) > WARNING_THRESHOLD * 0.5:
-                self.lines['alert'].set_text("⚠️ Caution: Vibration increasing")
-                self.lines['alert'].set_color('orange')
-            else:
-                self.lines['alert'].set_text("✓ Normal vibration levels")
-                self.lines['alert'].set_color('green')
-        else:
-            self.lines['current_val'].set_text("")
-            self.lines['baseline_diff'].set_text("")
-            self.lines['alert'].set_text("")
-
-        self.lines['packet_count'].set_text(f"Packets received: {self.packet_count}")
-
+                self.lines['current_val'].set_text("")
+                self.lines['baseline_diff'].set_text("")
+        # --- END STATUS PANEL DETAILS ---
         self.update_lower_right()
         return self.lines.values()
     
