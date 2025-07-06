@@ -200,6 +200,90 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## 📝 Version History
+
+### v0.57 (2025-07-06) - Historical Data & Logging Fixes
+**Major Fixes:**
+- **Fixed historical data plotting** - Corrected column names from `'Mean Acc (g)'` to `'Mean_Acc_g'` to match CSV format
+- **Fixed logging button crashes** - Removed tkinter dependencies that caused segmentation faults
+- **Restored correct CSV format** - Using original column structure with proper headers
+- **Added comprehensive debug logging** - Shows CSV columns, row counts, and data loading status
+
+**New Features:**
+- **Non-blocking logging** - "Log Data Point" button now works without freezing the GUI
+- **Immediate data logging** - Logs current vibration data with default values instantly
+- **Console feedback** - Shows current vibration statistics when logging
+- **Debug diagnostics** - Enhanced logging for troubleshooting data loading issues
+
+**Technical Improvements:**
+- Removed automatic periodic logging (was overwriting CSV with wrong format)
+- Fixed matplotlib/tkinter conflicts that caused application crashes
+- Added proper error handling for CSV loading and parsing
+- Improved data validation and column name matching
+
+### v0.56 (2025-07-06) - Status Panel Toggle Fixes
+**Fixes:**
+- **Always clear lower-right axes** when toggling to status panel to remove all historical plot artifacts
+- **Clean status panel display** - No more leftover lines, legends, or baselines from historical view
+- **Proper panel switching** - Status panel is now always clean after toggle
+
+### v0.55 (2025-07-06) - Status Panel Redraw Fix
+**Fixes:**
+- **Re-create text objects if missing** after toggling back from historical view
+- **Force complete redraw** of status panel elements
+- **Always restore status panel** correctly after historical view
+
+### v0.5 (2025-07-06) - Toggle Button & Panel Fixes
+**Fixes:**
+- **Fixed status panel toggle** - Preserve text content when switching views
+- **Added debug logging** - Track element visibility and text updates
+- **Clean panel switching** - Remove text clearing that caused display issues
+
+### v0.4 (2025-07-06) - Live Dashboard with Toggle
+**New Features:**
+- **Real-time vibration monitoring** with WT901BLE68 BLE sensor
+- **Live dashboard** with 4-panel layout (acceleration, mean/peak, std dev, status/historical)
+- **Toggle button** to switch between status panel and historical data view
+- **Background BLE threading** for non-blocking data collection
+- **File-based messaging** between BLE thread and GUI thread
+- **Stable graph axes** - No more jumping when data doesn't hit boundaries
+- **Reference lines** - Idle (1.01g), Cruise (1.03g), Warning (1.23g) baselines
+
+**Technical Architecture:**
+- BLE thread → JSON files → GUI thread → matplotlib animation
+- 50-point data batches, 100ms animation interval, 1000+ packets/sec
+- Custom 0x55 0x61 frame format support for WT901BLE68
+- Automatic device connection and data parsing
+
+### v0.3 (2025-07-06) - Enhanced Analysis & Logging
+**New Features:**
+- **Smart metadata extraction** from filenames (RPM, speed, notes)
+- **Comprehensive CSV logging** with operational data and recommendations
+- **Status monitoring** with baseline comparisons and warnings
+- **Batch processing** with summary reports
+- **Drag-and-drop support** via shell scripts
+
+**Improvements:**
+- Enhanced filename parsing for operational context
+- Added maintenance recommendations based on vibration levels
+- Improved error handling and validation
+- Better console output formatting
+
+### v0.2 (2025-07-06) - Core Analysis Engine
+**Features:**
+- **Accurate vibration calculation** using `Acc_total = sqrt(AccX² + AccY² + AccZ²)`
+- **Statistical analysis** (mean, standard deviation, peak)
+- **Allora-specific baselines** (1.01g idle, 1.03g cruising)
+- **CSV output** with detailed results
+- **Virtual environment setup** for dependency management
+
+### v0.1 (2025-07-06) - Initial Release
+**Basic Features:**
+- **WT901BLE68 sensor support** for 3-axis accelerometer data
+- **Tab-separated file parsing** with timestamp validation
+- **Basic vibration metrics** calculation
+- **Simple CSV logging** of results
+
 **Invalid Data Format**
 - Ensure files are tab-separated
 - Check column names match expected format
