@@ -532,11 +532,24 @@ class LiveVibrationMonitor:
             # STATUS PANEL
             ax.set_title('Status & Alerts', fontweight='bold')
             ax.axis('off')
-            
+
+            # Re-create status text objects if missing (after ax.clear())
+            for key, props in [
+                ('status_text', dict(x=0.1, y=0.8, s='Connecting...', fontsize=16, color='orange', fontweight='bold')),
+                ('current_val', dict(x=0.1, y=0.6, s='', fontsize=14, color='black', fontweight='bold')),
+                ('baseline_diff', dict(x=0.1, y=0.4, s='', fontsize=14, color='black', fontweight='bold')),
+                ('alert', dict(x=0.1, y=0.2, s='', fontsize=16, color='green', fontweight='bold')),
+                ('device_info', dict(x=0.1, y=0.95, s='', fontsize=12, color='blue', fontweight='bold')),
+                ('packet_count', dict(x=0.1, y=0.05, s='', fontsize=12, color='purple', fontweight='bold'))
+            ]:
+                if key not in self.lines or self.lines[key] not in ax.texts:
+                    self.lines[key] = ax.text(props['x'], props['y'], props['s'], fontsize=props['fontsize'],
+                                              transform=ax.transAxes, color=props['color'], fontweight=props['fontweight'])
+                    print(f"DEBUG: Re-created text object for {key}", flush=True)
+
             # Hide all historical elements
             for key in self.historical_elements:
                 self.historical_elements[key].set_visible(False)
-            
             # Show and update status fields
             for key in ['status_text', 'current_val', 'baseline_diff', 'alert', 'device_info', 'packet_count']:
                 if key in self.lines:
@@ -544,11 +557,8 @@ class LiveVibrationMonitor:
                     print(f"DEBUG: Made {key} visible", flush=True)
                 else:
                     print(f"DEBUG: Warning - {key} not found in self.lines", flush=True)
-            
             print(f"DEBUG: Status panel mode - acc_total length: {len(self.acc_total)}", flush=True)
-            
             print(f"DEBUG: update_lower_right - acc_total length: {len(self.acc_total)}", flush=True)
-            
             if len(self.acc_total) > 0:
                 # Update status text fields
                 recent_acc = list(self.acc_total)[-30:]
@@ -556,12 +566,10 @@ class LiveVibrationMonitor:
                 current_peak = np.max(recent_acc)
                 current_std = np.std(recent_acc)
                 print(f"DEBUG: update_lower_right - recent_acc: {len(recent_acc)} points, mean={current_mean:.3f}, peak={current_peak:.3f}", flush=True)
-                
                 if 'current_val' in self.lines:
                     current_text = f"Current Mean: {current_mean:.3f}g\nCurrent Peak: {current_peak:.3f}g"
                     self.lines['current_val'].set_text(current_text)
                     print(f"DEBUG: Set current_val to: {current_text}", flush=True)
-                
                 baseline = 1.01
                 diff = current_mean - baseline
                 diff_percent = (diff / baseline) * 100
@@ -569,7 +577,6 @@ class LiveVibrationMonitor:
                     baseline_text = f"vs Idle (1.01g): {diff:+.3f}g ({diff_percent:+.1f}%)"
                     self.lines['baseline_diff'].set_text(baseline_text)
                     print(f"DEBUG: Set baseline_diff to: {baseline_text}", flush=True)
-                
                 # Device info
                 devinfo = f"Device: {self.device_name or 'N/A'}\nMAC: {self.device_mac or 'N/A'}"
                 if 'device_info' in self.lines:
@@ -579,7 +586,6 @@ class LiveVibrationMonitor:
                     packet_text = f"Packets: {self.packet_count}"
                     self.lines['packet_count'].set_text(packet_text)
                     print(f"DEBUG: Set packet_count to: {packet_text}", flush=True)
-                
                 # Alert logic
                 if 'alert' in self.lines:
                     if current_mean > 1.23:
@@ -591,7 +597,6 @@ class LiveVibrationMonitor:
                     else:
                         self.lines['alert'].set_text("")
                         self.lines['alert'].set_color('black')
-                
                 if 'status_text' in self.lines:
                     self.lines['status_text'].set_text("")
                     self.lines['status_text'].set_color('black')
@@ -604,60 +609,43 @@ class LiveVibrationMonitor:
                         self.lines[key].set_text("")
                         if key == 'alert':
                             self.lines[key].set_color('black')
-                
                 if 'status_text' in self.lines:
                     self.lines['status_text'].set_text("Connecting...")
                     self.lines['status_text'].set_color('orange')
                 print("DEBUG: Status panel: Connecting...", flush=True)
-                
         else:
             # HISTORICAL PANEL
-            # Clear the entire panel first to remove any artifacts
             ax.clear()
             ax.set_title('Historical Comparison', fontweight='bold')
             ax.set_ylabel('Mean Acceleration (g)')
             ax.set_xlabel('Time')
             ax.grid(True, alpha=0.3)
-            
-            # Hide all status fields (don't clear text, just hide)
             for key in ['status_text', 'current_val', 'baseline_diff', 'alert', 'device_info', 'packet_count']:
                 self.lines[key].set_visible(False)
-            
-            # Hide historical text elements (we're using the plot instead)
             for key in self.historical_elements:
                 self.historical_elements[key].set_visible(False)
-            
-            # Load and display historical data
             import pandas as pd
             log_path = 'cmd/vibration_log.csv'
             has_data = False
-            
             if os.path.exists(log_path):
                 try:
                     df = pd.read_csv(log_path)
                     if not df.empty and 'Timestamp' in df.columns and 'Mean Acc (g)' in df.columns:
                         has_data = True
                         df['timestamp'] = pd.to_datetime(df['Timestamp'], format='ISO8601', errors='coerce')
-                        # Drop rows with invalid timestamps
                         df = df.dropna(subset=['timestamp'])
-                        
                         if not df.empty:
                             ax.plot(df['timestamp'], df['Mean Acc (g)'], 'o-', color='blue', 
                                    label='Historical Data', markersize=6, linewidth=2)
-                            
-                            # Add baseline reference lines
                             ax.axhline(1.01, color='green', linestyle='--', linewidth=1, 
                                       label='Idle Baseline (1.01g)', alpha=0.7)
                             ax.axhline(1.03, color='orange', linestyle='--', linewidth=1, 
                                       label='Cruise Baseline (1.03g)', alpha=0.7)
                             ax.axhline(1.23, color='red', linestyle='--', linewidth=1, 
                                       label='Warning Threshold (1.23g)', alpha=0.7)
-                            
-                            # Format x-axis for better readability
                             ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
                             ax.xaxis.set_major_locator(mdates.AutoDateLocator())
                             plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
-                            
                             ax.legend(loc='upper right')
                             ax.grid(True, alpha=0.3)
                         else:
@@ -665,9 +653,7 @@ class LiveVibrationMonitor:
                 except Exception as e:
                     print(f"Error loading historical data: {e}", flush=True)
                     has_data = False
-            
             if not has_data:
-                # Display "No historical data available" message
                 ax.text(0.5, 0.5, 'No historical data available', 
                        ha='center', va='center', fontsize=14, color='red', 
                        transform=ax.transAxes, fontweight='bold')
@@ -859,6 +845,12 @@ class LiveVibrationMonitor:
         """Load latest data from file and update local storage"""
         try:
             latest_data = self.messenger.get_latest_data(max_points=200)
+            print(f"DEBUG: load_latest_data - loaded {len(latest_data)} points from file", flush=True)
+            if latest_data:
+                print(f"DEBUG: load_latest_data - first data point: {latest_data[0]}", flush=True)
+                print(f"DEBUG: load_latest_data - last data point: {latest_data[-1]}", flush=True)
+            else:
+                print(f"DEBUG: load_latest_data - no data loaded from file", flush=True)
             self.timestamps.clear()
             self.acc_data.clear()
             self.acc_total.clear()
@@ -869,6 +861,7 @@ class LiveVibrationMonitor:
                     self.acc_data.append([data_point['acc_x'], data_point['acc_y'], data_point['acc_z']])
                     self.acc_total.append(data_point['acc_total'])
                 except Exception as e:
+                    print(f"DEBUG: load_latest_data - error parsing data_point: {data_point}, error: {e}", flush=True)
                     continue
             # Set connected True if we have data
             if len(self.acc_total) > 0:
@@ -880,6 +873,8 @@ class LiveVibrationMonitor:
                 print(f"DEBUG: Latest acc_total value: {self.acc_total[-1]:.4f}g", flush=True)
         except Exception as e:
             print(f"Error loading latest data: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
     
     def start_ble_thread(self, device):
         """Start BLE handler in background thread"""
