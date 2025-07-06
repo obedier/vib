@@ -10,7 +10,7 @@ import struct
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
+import matplotlib.animation as animation
 import matplotlib.dates as mdates
 from datetime import datetime, timedelta
 from bleak import BleakScanner, BleakClient
@@ -45,6 +45,8 @@ WARNING_THRESHOLD = 0.2  # g increase from baseline
 MESSAGE_FILE = "vib_messages.json"
 STATUS_FILE = "vib_status.json"
 DATA_FILE = "vib_data.json"
+
+TEST_CAPTURE_FILE = "test_capture.json"
 
 class FileMessenger:
     """File-based messaging system for BLE-GUI communication"""
@@ -107,24 +109,30 @@ class FileMessenger:
         """Save a batch of vibration data"""
         with self.lock:
             try:
+                print(f"DEBUG: Saving batch of {len(data_batch)} data points", flush=True)
                 # Append to existing data or create new file
                 existing_data = []
                 if os.path.exists(self.data_file):
                     try:
                         with open(self.data_file, 'r') as f:
                             existing_data = json.load(f)
+                        print(f"DEBUG: Loaded {len(existing_data)} existing data points", flush=True)
                     except:
                         existing_data = []
+                        print(f"DEBUG: No existing data or error loading, starting fresh", flush=True)
                 
                 # Add new data
                 existing_data.extend(data_batch)
+                print(f"DEBUG: Total data points after adding batch: {len(existing_data)}", flush=True)
                 
                 # Keep only last 1000 data points to prevent file bloat
                 if len(existing_data) > 1000:
                     existing_data = existing_data[-1000:]
+                    print(f"DEBUG: Trimmed to last 1000 data points", flush=True)
                 
                 with open(self.data_file, 'w') as f:
                     json.dump(existing_data, f)
+                print(f"DEBUG: Successfully saved {len(existing_data)} data points to {self.data_file}", flush=True)
             except Exception as e:
                 print(f"Error saving data: {e}", flush=True)
     
@@ -320,10 +328,14 @@ class BLEHandler:
 class LiveVibrationMonitor:
     """Main GUI class for live vibration monitoring"""
     
-    def __init__(self):
+    def __init__(self, test_mode=False):
         self.messenger = FileMessenger()
         self.ble_handler = BLEHandler(self.messenger)
         self.ble_thread = None
+        self.test_mode = test_mode
+        self.test_data = []
+        self.test_data_index = 0
+        self.test_start_time = None
         
         # Data storage
         self.acc_data = deque(maxlen=1000)
@@ -344,6 +356,13 @@ class LiveVibrationMonitor:
         self.device_mac = None
         self.packet_count = 0
         
+        self.showing_historical = False  # Always start in live mode
+        self.toggle_button = None
+        self.show_status = False  # Lower right: False=historical, True=status
+        self.capturing_test = False
+        self.replaying_test = test_mode
+        self.data_source_status = 'Live BLE Data' if not test_mode else 'Test Data Replay'
+        
     def load_baseline_data(self):
         """Load historical vibration data for comparison"""
         try:
@@ -360,54 +379,49 @@ class LiveVibrationMonitor:
             print(f"Error loading baseline data: {e}", flush=True)
             self.baseline_data = None
     
+    async def connect_to_device(self, device):
+        try:
+            print(f"Connecting to {device.address}...", flush=True)
+            self.data_source_status = f'Live BLE Data: {device.name} ({device.address})'
+            self.update_data_source_status()
+            # Here you would start BLE connection and data streaming logic
+            # For now, just simulate connection
+            print("Connected! Receiving data...", flush=True)
+            return True
+        except Exception as e:
+            print(f"Connection failed: {e}", flush=True)
+            self.data_source_status = 'Test Data Replay'
+            self.update_data_source_status()
+            self.replaying_test = True
+            self.load_test_data()
+            return False
+
     def setup_plot(self):
-        """Setup the real-time plotting dashboard"""
-        plt.style.use('dark_background')
+        plt.style.use('default')
         self.fig, self.axes = plt.subplots(2, 2, figsize=(15, 10))
+        self.fig.patch.set_facecolor('white')
+        for row in self.axes:
+            for ax in row:
+                ax.set_facecolor('white')
         self.fig.suptitle('Allora Yacht - Live Vibration Monitor v2 (WT901BLE68)', 
                          fontsize=16, fontweight='bold')
-        
-        # Plot 1: Real-time acceleration
-        ax1 = self.axes[0, 0]
-        ax1.set_title('Live Total Acceleration (g)', fontweight='bold')
-        ax1.set_ylabel('Acceleration (g)')
-        ax1.grid(True, alpha=0.3)
-        self.lines['acc'] = ax1.plot([], [], 'g-', linewidth=2, label='Live Acc')[0]
-        ax1.axhline(y=IDLE_BASELINE, color='blue', linestyle='--', alpha=0.7, label=f'Idle Baseline ({IDLE_BASELINE}g)')
-        ax1.axhline(y=CRUISE_BASELINE, color='orange', linestyle='--', alpha=0.7, label=f'Cruise Baseline ({CRUISE_BASELINE}g)')
-        ax1.axhline(y=CRUISE_BASELINE + WARNING_THRESHOLD, color='red', linestyle='--', alpha=0.7, label=f'Warning Threshold ({CRUISE_BASELINE + WARNING_THRESHOLD}g)')
-        ax1.legend()
-        ax1.set_ylim(0.8, 1.5)
-        
-        # Plot 2: Rolling statistics
-        ax2 = self.axes[0, 1]
-        ax2.set_title('Rolling Statistics (Last 50 samples)', fontweight='bold')
-        ax2.set_ylabel('Acceleration (g)')
-        ax2.grid(True, alpha=0.3)
-        self.lines['mean'] = ax2.plot([], [], 'b-', linewidth=2, label='Mean')[0]
-        self.lines['std'] = ax2.plot([], [], 'r-', linewidth=2, label='Std Dev')[0]
-        self.lines['peak'] = ax2.plot([], [], 'y-', linewidth=2, label='Peak')[0]
-        ax2.legend()
-        ax2.set_ylim(0.8, 1.5)
-        
-        # Plot 3: Historical comparison
-        ax3 = self.axes[1, 0]
-        ax3.set_title('Historical Comparison', fontweight='bold')
-        ax3.set_ylabel('Mean Acceleration (g)')
-        ax3.set_xlabel('Time')
-        ax3.grid(True, alpha=0.3)
-        if self.baseline_data is not None:
-            ax3.scatter(self.baseline_data['timestamp'], self.baseline_data['mean_acc'], 
-                       alpha=0.6, s=30, c='gray', label='Historical')
-            ax3.axhline(y=IDLE_BASELINE, color='blue', linestyle='--', alpha=0.7)
-            ax3.axhline(y=CRUISE_BASELINE, color='orange', linestyle='--', alpha=0.7)
-            ax3.legend()
-        self.lines['current'] = ax3.scatter([], [], c='red', s=100, marker='o', label='Current')
-        
-        # Plot 4: Status and alerts
+        # Add data source status indicator at the top
+        self.status_text_top = self.fig.text(0.5, 0.97, f'Data Source: {self.data_source_status}', ha='center', va='top', fontsize=12, color='blue')
+        # Add buttons along the top (smaller height)
+        ax_status = self.fig.add_axes([0.05, 0.92, 0.15, 0.04])
+        self.status_button = Button(ax_status, 'Show Status', color='gray', hovercolor='orange')
+        self.status_button.on_clicked(self.on_toggle_status)
+        ax_capture = self.fig.add_axes([0.22, 0.92, 0.15, 0.04])
+        self.capture_button = Button(ax_capture, 'Capture Test Data', color='gray', hovercolor='orange')
+        self.capture_button.on_clicked(self.on_capture_test_data)
+        ax_replay = self.fig.add_axes([0.39, 0.92, 0.15, 0.04])
+        self.replay_button = Button(ax_replay, 'Replay Test Data', color='gray', hovercolor='orange')
+        self.replay_button.on_clicked(self.on_replay_test_data)
+        # Initialize all status text elements in lower right
         ax4 = self.axes[1, 1]
         ax4.set_title('Status & Alerts', fontweight='bold')
         ax4.axis('off')
+        self.lines = {}
         self.lines['status_text'] = ax4.text(0.1, 0.8, 'Connecting...', fontsize=14, 
                                             transform=ax4.transAxes, color='yellow')
         self.lines['current_val'] = ax4.text(0.1, 0.6, '', fontsize=12, 
@@ -420,16 +434,92 @@ class LiveVibrationMonitor:
                                             transform=ax4.transAxes, color='cyan')
         self.lines['packet_count'] = ax4.text(0.1, 0.05, '', fontsize=10, 
                                              transform=ax4.transAxes, color='magenta')
-        
-        # Add Change Device button
-        ax_button = self.fig.add_axes([0.8, 0.92, 0.15, 0.06])
-        self.change_device_button = Button(ax_button, 'Change Device', color='gray', hovercolor='orange')
-        self.change_device_button.on_clicked(self.on_change_device)
-        
+        # Initialize historical plot elements (initially hidden)
+        self.historical_elements = {}
+        self.historical_elements['title'] = ax4.text(0.5, 0.95, 'Historical Vibration Log (One Point Per Run)', 
+                                                    fontsize=12, fontweight='bold', ha='center', va='top',
+                                                    transform=ax4.transAxes, color='black', visible=False)
+        self.historical_elements['error_text'] = ax4.text(0.5, 0.5, '', ha='center', va='center', 
+                                                         transform=ax4.transAxes, color='red', visible=False)
+        # Initialize historical plot lines (empty initially)
+        self.historical_lines = {'mean': None, 'peak': None, 'std': None}
         plt.tight_layout(rect=[0, 0, 0.98, 0.9])
-    
+        # Top-left: Live Acceleration plot
+        self.lines['acc'], = self.axes[0, 0].plot([], [], 'b-', label='Acc Total')
+        self.axes[0, 0].set_title('Live Acceleration (g)')
+        self.axes[0, 0].set_ylabel('g')
+        self.axes[0, 0].set_xlabel('Sample')
+        self.axes[0, 0].grid(True, alpha=0.3)
+        self.axes[0, 0].legend()
+        # Top-right: Rolling Mean & Peak
+        self.lines['mean'], = self.axes[0, 1].plot([], [], 'b-', label='Mean')
+        self.lines['peak'], = self.axes[0, 1].plot([], [], 'y-', label='Peak')
+        self.axes[0, 1].set_title('Rolling Mean & Peak')
+        self.axes[0, 1].set_ylabel('g')
+        self.axes[0, 1].set_xlabel('Window')
+        self.axes[0, 1].grid(True, alpha=0.3)
+        self.axes[0, 1].legend()
+        # Bottom-left: Rolling Std Dev
+        self.lines['std'], = self.axes[1, 0].plot([], [], 'r-', label='Std Dev')
+        self.axes[1, 0].set_title('Rolling Std Dev')
+        self.axes[1, 0].set_ylabel('g')
+        self.axes[1, 0].set_xlabel('Window')
+        self.axes[1, 0].grid(True, alpha=0.3)
+        self.axes[1, 0].legend()
+
+    def on_toggle_status(self, event):
+        self.show_status = not self.show_status
+        self.status_button.label.set_text('Show Historical' if self.show_status else 'Show Status')
+        self.update_lower_right()
+        self.fig.canvas.draw_idle()
+
+    def on_capture_test_data(self, event):
+        if not self.capturing_test:
+            self.capturing_test = True
+            self.capture_button.label.set_text('Capturing...')
+            self.capture_test_data()
+            self.capture_button.label.set_text('Capture Test Data')
+            self.capturing_test = False
+
+    def on_replay_test_data(self, event):
+        self.replaying_test = not self.replaying_test
+        self.data_source_status = 'Test Data Replay' if self.replaying_test else 'Live BLE Data'
+        self.update_data_source_status()
+        self.replay_button.label.set_text('Stop Replay' if self.replaying_test else 'Replay Test Data')
+        if self.replaying_test:
+            self.load_test_data()
+        else:
+            self.test_data = []
+            self.test_data_index = 0
+            self.test_start_time = None
+
+    def update_lower_right(self):
+        ax = self.axes[1, 1]
+        if self.show_status:
+            ax.set_title('Status & Alerts', fontweight='bold')
+            ax.axis('off')
+            # Show status elements
+            for key in ['status_text', 'current_val', 'baseline_diff', 'alert', 'device_info', 'packet_count']:
+                self.lines[key].set_visible(True)
+            # Hide historical elements
+            for key in self.historical_elements:
+                self.historical_elements[key].set_visible(False)
+            # DO NOT touch visibility of main plot lines here
+        else:
+            ax.set_title('Historical Vibration Log (One Point Per Run)', fontweight='bold')
+            ax.axis('on')
+            ax.set_ylabel('Acceleration (g)')
+            # Hide status elements
+            for key in ['status_text', 'current_val', 'baseline_diff', 'alert', 'device_info', 'packet_count']:
+                self.lines[key].set_visible(False)
+            # Show historical elements
+            for key in self.historical_elements:
+                self.historical_elements[key].set_visible(True)
+            # DO NOT touch visibility of main plot lines here
+
     def update_plot(self, frame):
-        """Update the real-time plots"""
+        if self.replaying_test:
+            self.feed_test_data()
         # Check for messages from BLE thread
         message = self.messenger.get_message()
         if message:
@@ -474,11 +564,15 @@ class LiveVibrationMonitor:
                 y_max = max(recent_acc) + 0.02
                 self.axes[0, 0].set_ylim(y_min, y_max)
                 self.axes[0, 0].set_xlim(0, len(recent_acc))
+                print(f"DEBUG: Updated acc plot with {len(recent_acc)} points, range: {y_min:.3f}-{y_max:.3f}g", flush=True)
+            else:
+                print(f"DEBUG: No recent_acc data to plot", flush=True)
+        else:
+            print(f"DEBUG: No timestamps data available", flush=True)
 
         # Update rolling statistics
-        if len(self.acc_total) >= 10:
+        if len(self.acc_total) >= 6:
             window = min(50, len(self.acc_total))
-            # Convert deque to list for slicing
             recent_data = list(self.acc_total)[-window:]
             means = []
             stds = []
@@ -490,34 +584,29 @@ class LiveVibrationMonitor:
                 peaks.append(np.max(window_data))
             if means:
                 x_data = list(range(len(means)))
+                # Update mean & peak (Top Right)
                 self.lines['mean'].set_data(x_data, means)
-                self.lines['std'].set_data(x_data, stds)
                 self.lines['peak'].set_data(x_data, peaks)
-                
-                # Update y-axis limits for stats
-                all_stats = means + stds + peaks
-                if all_stats:
-                    y_min = min(all_stats) - 0.01
-                    y_max = max(all_stats) + 0.01
-                    self.axes[0, 1].set_ylim(y_min, y_max)
-                
-                self.axes[0, 1].set_xlim(0, len(means))
+                self.axes[0, 1].set_xlim(0, max(1, len(means)))
+                self.axes[0, 1].set_ylim(0.8, 1.5)
+                # Update std dev (Bottom Left)
+                self.lines['std'].set_data(x_data, stds)
+                self.axes[1, 0].set_xlim(0, max(1, len(stds)))
+                self.axes[1, 0].set_ylim(0, max(0.1, max(stds) + 0.01 if stds else 0.1))
 
         # Update status/alerts for vibration only if we have data
         if len(self.acc_total) > 0:
-            # Convert deque to list for slicing
             recent_acc = list(self.acc_total)[-10:]
             current_mean = np.mean(recent_acc)
             current_peak = np.max(recent_acc)
-            if current_mean < IDLE_BASELINE + 0.05:
-                baseline = IDLE_BASELINE
-                baseline_name = "Idle"
-            else:
-                baseline = CRUISE_BASELINE
-                baseline_name = "Cruise"
+            current_std = np.std(recent_acc)
+            self.lines['current_val'].set_text(
+                f"Current Mean: {current_mean:.3f}g\nCurrent Peak: {current_peak:.3f}g\nCurrent Std Dev: {current_std:.3f}g"
+            )
+            baseline = IDLE_BASELINE
+            baseline_name = "Idle"
             diff = current_mean - baseline
             diff_percent = (diff / baseline) * 100
-            self.lines['current_val'].set_text(f"Current Mean: {current_mean:.3f}g\nCurrent Peak: {current_peak:.3f}g")
             self.lines['baseline_diff'].set_text(f"vs {baseline_name} ({baseline}g): {diff:+.3f}g ({diff_percent:+.1f}%)")
             if abs(diff) > WARNING_THRESHOLD:
                 self.lines['alert'].set_text("⚠️ WARNING: High vibration detected!")
@@ -535,6 +624,7 @@ class LiveVibrationMonitor:
 
         self.lines['packet_count'].set_text(f"Packets received: {self.packet_count}")
 
+        self.update_lower_right()
         return self.lines.values()
     
     def handle_message(self, message):
@@ -558,6 +648,7 @@ class LiveVibrationMonitor:
         """Load latest data from file and update local storage"""
         try:
             latest_data = self.messenger.get_latest_data(max_points=200)
+            print(f"DEBUG: Loaded {len(latest_data)} data points from file", flush=True)
             
             # Clear existing data and reload
             self.timestamps.clear()
@@ -572,6 +663,10 @@ class LiveVibrationMonitor:
                     self.acc_total.append(data_point['acc_total'])
                 except Exception as e:
                     print(f"Error processing data point: {e}", flush=True)
+            
+            print(f"DEBUG: Processed {len(self.acc_total)} data points into local storage", flush=True)
+            if len(self.acc_total) > 0:
+                print(f"DEBUG: Latest acc_total value: {self.acc_total[-1]:.4f}g", flush=True)
                     
         except Exception as e:
             print(f"Error loading latest data: {e}", flush=True)
@@ -644,6 +739,54 @@ class LiveVibrationMonitor:
             print(f"Error scanning devices: {e}", flush=True)
             return None
 
+    def load_test_data(self):
+        try:
+            with open(TEST_CAPTURE_FILE, 'r') as f:
+                self.test_data = json.load(f)
+        except Exception as e:
+            print(f"No test data found: {e}", flush=True)
+            self.test_data = []
+        self.test_data_index = 0
+        self.test_start_time = None
+
+    def feed_test_data(self):
+        if not self.test_data:
+            self.load_test_data()
+        if not self.test_data:
+            return
+        now = time.time()
+        if self.test_start_time is None:
+            self.test_start_time = now
+        elapsed = now - self.test_start_time
+        idx = int((elapsed * len(self.test_data)) / 60) % len(self.test_data)
+        data_point = self.test_data[idx]
+        self.timestamps.append(datetime.fromisoformat(data_point['timestamp']))
+        self.acc_data.append([data_point['acc_x'], data_point['acc_y'], data_point['acc_z']])
+        self.acc_total.append(data_point['acc_total'])
+
+    def capture_test_data(self):
+        print("Capturing 1 minute of data for test mode...", flush=True)
+        captured = []
+        start = time.time()
+        while time.time() - start < 60:
+            if len(self.acc_total) > 0:
+                captured.append({
+                    'timestamp': datetime.now().isoformat(),
+                    'acc_x': self.acc_data[-1][0],
+                    'acc_y': self.acc_data[-1][1],
+                    'acc_z': self.acc_data[-1][2],
+                    'acc_total': self.acc_total[-1]
+                })
+            time.sleep(0.05)
+        with open(TEST_CAPTURE_FILE, 'w') as f:
+            json.dump(captured, f)
+        print(f"Saved {len(captured)} samples to {TEST_CAPTURE_FILE}", flush=True)
+
+    def update_data_source_status(self):
+        if hasattr(self, 'status_text_top'):
+            self.status_text_top.set_text(f'Data Source: {self.data_source_status}')
+            self.fig.canvas.draw_idle()
+
 async def scan_devices():
     """Scan for BLE devices"""
     print("Scanning for BLE devices...", flush=True)
@@ -710,15 +853,16 @@ async def main():
                 selected_device = device
                 break
     if not selected_device:
-        print("No device selected. Exiting.", flush=True)
-        return
+        print("No device selected or found. Switching to test data replay mode.", flush=True)
+        monitor.replaying_test = True
+        monitor.data_source_status = 'Test Data Replay'
+        monitor.update_data_source_status()
+        monitor.load_test_data()
+    else:
+        await monitor.connect_to_device(selected_device)
+        monitor.start_ble_thread(selected_device)
     
-    # Start BLE thread
-    monitor.start_ble_thread(selected_device)
-    
-    # Start matplotlib animation
-    monitor.ani = FuncAnimation(monitor.fig, monitor.update_plot, interval=100, blit=True)
-    
+    monitor.ani = animation.FuncAnimation(monitor.fig, monitor.update_plot, interval=100, blit=True)
     try:
         plt.show()
     except KeyboardInterrupt:
@@ -736,9 +880,20 @@ async def main():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="WT901BLE68 Live Vibration Monitor v2")
     parser.add_argument("--unbuffered", "-u", action="store_true", help="Force unbuffered output (live print)")
+    parser.add_argument("--test", "-t", action="store_true", help="Test mode: replay 1 min of captured data")
     args = parser.parse_args()
     
     if args.unbuffered:
         sys.stdout.reconfigure(line_buffering=True)
     
-    asyncio.run(main()) 
+    monitor = LiveVibrationMonitor(test_mode=args.test)
+    if args.test:
+        if not os.path.exists(TEST_CAPTURE_FILE):
+            monitor.capture_test_data()
+        else:
+            print(f"Test mode: Replaying {TEST_CAPTURE_FILE}", flush=True)
+        monitor.setup_plot()
+        monitor.ani = animation.FuncAnimation(monitor.fig, monitor.update_plot, interval=100, blit=True)
+        plt.show()
+    else:
+        asyncio.run(main()) 
