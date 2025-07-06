@@ -363,13 +363,15 @@ class LiveVibrationMonitor:
         self.replaying_test = test_mode
         self.data_source_status = 'Live BLE Data' if not test_mode else 'Test Data Replay'
         self.last_snapshot_time = 0  # For periodic logging
+        self.reference_lines = []  # Track reference lines for live plot
+        self.connected = False  # Track connection status
         
     def load_baseline_data(self):
         """Load historical vibration data for comparison"""
         try:
             if pd.io.common.file_exists('cmd/vibration_log.csv'):
                 df = pd.read_csv('cmd/vibration_log.csv')
-                df['timestamp'] = pd.to_datetime(df['Timestamp'])
+                df['timestamp'] = pd.to_datetime(df['Timestamp'], format='ISO8601', errors='coerce')
                 df['mean_acc'] = df['Mean Acc (g)']
                 self.baseline_data = df
                 print(f"Loaded {len(df)} historical readings", flush=True)
@@ -499,6 +501,46 @@ class LiveVibrationMonitor:
         if self.show_status:
             ax.set_title('Status & Alerts', fontweight='bold')
             ax.axis('off')
+            if len(self.acc_total) > 0:
+                # Update status text fields
+                recent_acc = list(self.acc_total)[-30:]
+                current_mean = np.mean(recent_acc)
+                current_peak = np.max(recent_acc)
+                current_std = np.std(recent_acc)
+                self.lines['current_val'].set_text(
+                    f"Current Mean: {current_mean:.3f}g\nCurrent Peak: {current_peak:.3f}g")
+                baseline = 1.01
+                diff = current_mean - baseline
+                diff_percent = (diff / baseline) * 100
+                self.lines['baseline_diff'].set_text(f"vs Idle (1.01g): {diff:+.3f}g ({diff_percent:+.1f}%)")
+                # Device info
+                devinfo = f"Device: {self.device_name or 'N/A'}\nMAC: {self.device_mac or 'N/A'}"
+                self.lines['device_info'].set_text(devinfo)
+                self.lines['packet_count'].set_text(f"Packets: {self.packet_count}")
+                # Alert logic
+                if current_mean > 1.23:
+                    self.lines['alert'].set_text("ALERT: Vibration High!")
+                    self.lines['alert'].set_color('red')
+                elif current_mean > 1.03:
+                    self.lines['alert'].set_text("Warning: Above Cruise")
+                    self.lines['alert'].set_color('orange')
+                else:
+                    self.lines['alert'].set_text("")
+                    self.lines['alert'].set_color('black')
+                self.lines['status_text'].set_text("")
+                self.lines['status_text'].set_color('black')
+                print(f"DEBUG: Status panel updated: mean={current_mean:.3f}, peak={current_peak:.3f}", flush=True)
+            else:
+                # Not connected yet
+                self.lines['current_val'].set_text("")
+                self.lines['baseline_diff'].set_text("")
+                self.lines['device_info'].set_text("")
+                self.lines['packet_count'].set_text("")
+                self.lines['alert'].set_text("")
+                self.lines['alert'].set_color('black')
+                self.lines['status_text'].set_text("Connecting...")
+                self.lines['status_text'].set_color('yellow')
+                print("DEBUG: Status panel: Connecting...", flush=True)
             for key in ['status_text', 'current_val', 'baseline_diff', 'alert', 'device_info', 'packet_count']:
                 self.lines[key].set_visible(True)
             for key in self.historical_elements:
@@ -513,7 +555,7 @@ class LiveVibrationMonitor:
             if os.path.exists(log_path):
                 df = pd.read_csv(log_path)
                 if not df.empty:
-                    df['timestamp'] = pd.to_datetime(df['Timestamp'])
+                    df['timestamp'] = pd.to_datetime(df['Timestamp'], format='ISO8601', errors='coerce')
                     ax.plot(df['timestamp'], df['Mean Acc (g)'], 'o-', color='white', label='Historical')
                     ax.axhline(1.01, color='blue', linestyle='--', linewidth=1, label='Idle Baseline (1.01g)')
                     ax.axhline(1.03, color='orange', linestyle='--', linewidth=1, label='Cruise Baseline (1.03g)')
@@ -537,18 +579,94 @@ class LiveVibrationMonitor:
         self.device_mac = status.get('device_mac')
         # --- LIVE REFERENCE LINES ---
         ax_live = self.axes[0, 0]
-        ax_live.lines = [self.lines['acc']]  # Remove all but main line
+        # Remove previous reference lines
+        for ref_line in getattr(self, 'reference_lines', []):
+            try:
+                ref_line.remove()
+            except Exception:
+                pass
+        self.reference_lines = []
         idle = 1.01
         cruise = 1.03
         warn = 1.23
-        ax_live.axhline(idle, color='blue', linestyle='--', linewidth=1, label='Idle Baseline (1.01g)')
-        ax_live.axhline(cruise, color='orange', linestyle='--', linewidth=1, label='Cruise Baseline (1.03g)')
-        ax_live.axhline(warn, color='red', linestyle='--', linewidth=1, label='Warning Threshold (1.23g)')
+        # --- MAIN PLOT DATA ---
+        if len(self.timestamps) > 0:
+            window = min(100, len(self.timestamps))
+            recent_times = list(self.timestamps)[-window:]
+            recent_acc = list(self.acc_total)[-window:]
+            x_data = list(range(len(recent_acc)))
+            self.lines['acc'].set_data(x_data, recent_acc)
+            if len(recent_acc) > 0:
+                y_min = min(recent_acc) - 0.02
+                y_max = max(recent_acc) + 0.02
+                ax_live.set_ylim(y_min, y_max)
+                ax_live.set_xlim(0, window)
+            print(f"DEBUG: acc plot updated with {len(recent_acc)} points", flush=True)
+        # --- END MAIN PLOT DATA ---
+        # Add reference lines after main plot line
+        self.reference_lines.append(ax_live.axhline(idle, color='blue', linestyle='--', linewidth=1, label='Idle Baseline (1.01g)'))
+        self.reference_lines.append(ax_live.axhline(cruise, color='orange', linestyle='--', linewidth=1, label='Cruise Baseline (1.03g)'))
+        self.reference_lines.append(ax_live.axhline(warn, color='red', linestyle='--', linewidth=1, label='Warning Threshold (1.23g)'))
+        # Ensure main plot line is present
+        if self.lines['acc'] not in ax_live.lines:
+            ax_live.add_line(self.lines['acc'])
+            print("DEBUG: Re-added main plot line to axes", flush=True)
         handles, labels = ax_live.get_legend_handles_labels()
         by_label = dict(zip(labels, handles))
         ax_live.legend(by_label.values(), by_label.keys())
         # --- END LIVE REFERENCE LINES ---
-        # ... existing code ...
+        # --- ROLLING MEAN & PEAK ---
+        ax_mean = self.axes[0, 1]
+        if len(self.acc_total) > 0:
+            window = min(100, len(self.acc_total))
+            win_size = 30
+            means = []
+            peaks = []
+            x_vals = []
+            acc_list = list(self.acc_total)[-window:]
+            alpha = 0.2  # EMA smoothing factor
+            ema_mean = None
+            for i in range(window - win_size + 1):
+                win = acc_list[i:i+win_size]
+                mean = np.mean(win)
+                peak = np.max(win)
+                if ema_mean is None:
+                    ema_mean = mean
+                else:
+                    ema_mean = alpha * mean + (1 - alpha) * ema_mean
+                means.append(ema_mean)
+                peaks.append(peak)
+                x_vals.append(i + win_size // 2)
+            self.lines['mean'].set_data(x_vals, means)
+            self.lines['peak'].set_data(x_vals, peaks)
+            if means and peaks:
+                ax_mean.set_xlim(0, window)
+                ax_mean.set_ylim(min(means + peaks) - 0.02, max(means + peaks) + 0.02)
+
+        # --- ROLLING STD DEV ---
+        ax_std = self.axes[1, 0]
+        if len(self.acc_total) > 0:
+            window = min(100, len(self.acc_total))
+            win_size = 30
+            stds = []
+            x_vals = []
+            acc_list = list(self.acc_total)[-window:]
+            alpha = 0.2
+            ema_std = None
+            for i in range(window - win_size + 1):
+                win = acc_list[i:i+win_size]
+                std = np.std(win)
+                if ema_std is None:
+                    ema_std = std
+                else:
+                    ema_std = alpha * std + (1 - alpha) * ema_std
+                stds.append(ema_std)
+                x_vals.append(i + win_size // 2)
+            self.lines['std'].set_data(x_vals, stds)
+            if stds:
+                ax_std.set_xlim(0, window)
+                ax_std.set_ylim(min(stds) - 0.01, max(stds) + 0.01)
+
         # --- PERIODIC HISTORICAL SNAPSHOT ---
         now = time.time()
         if now - self.last_snapshot_time > 30 and len(self.acc_total) > 10:
@@ -566,7 +684,6 @@ class LiveVibrationMonitor:
                 writer.writerow([ts, mean, std, peak])
             self.last_snapshot_time = now
         # --- END HISTORICAL SNAPSHOT ---
-        # ... existing code ...
         # --- STATUS PANEL ALWAYS SHOWS DETAILS ---
         if self.show_status:
             if len(self.acc_total) > 0:
@@ -608,13 +725,9 @@ class LiveVibrationMonitor:
         """Load latest data from file and update local storage"""
         try:
             latest_data = self.messenger.get_latest_data(max_points=200)
-            print(f"DEBUG: Loaded {len(latest_data)} data points from file", flush=True)
-            
-            # Clear existing data and reload
             self.timestamps.clear()
             self.acc_data.clear()
             self.acc_total.clear()
-            
             for data_point in latest_data:
                 try:
                     timestamp = datetime.fromisoformat(data_point['timestamp'])
@@ -622,12 +735,15 @@ class LiveVibrationMonitor:
                     self.acc_data.append([data_point['acc_x'], data_point['acc_y'], data_point['acc_z']])
                     self.acc_total.append(data_point['acc_total'])
                 except Exception as e:
-                    print(f"Error processing data point: {e}", flush=True)
-            
+                    continue
+            # Set connected True if we have data
+            if len(self.acc_total) > 0:
+                if not self.connected:
+                    print("DEBUG: Connection established, data received.", flush=True)
+                self.connected = True
             print(f"DEBUG: Processed {len(self.acc_total)} data points into local storage", flush=True)
             if len(self.acc_total) > 0:
                 print(f"DEBUG: Latest acc_total value: {self.acc_total[-1]:.4f}g", flush=True)
-                    
         except Exception as e:
             print(f"Error loading latest data: {e}", flush=True)
     
@@ -822,7 +938,7 @@ async def main():
         await monitor.connect_to_device(selected_device)
         monitor.start_ble_thread(selected_device)
     
-    monitor.ani = animation.FuncAnimation(monitor.fig, monitor.update_plot, interval=100, blit=True)
+    monitor.ani = animation.FuncAnimation(monitor.fig, monitor.update_plot, interval=100, blit=False)
     try:
         plt.show()
     except KeyboardInterrupt:
@@ -853,7 +969,7 @@ if __name__ == "__main__":
         else:
             print(f"Test mode: Replaying {TEST_CAPTURE_FILE}", flush=True)
         monitor.setup_plot()
-        monitor.ani = animation.FuncAnimation(monitor.fig, monitor.update_plot, interval=100, blit=True)
+        monitor.ani = animation.FuncAnimation(monitor.fig, monitor.update_plot, interval=100, blit=False)
         plt.show()
     else:
         asyncio.run(main()) 
