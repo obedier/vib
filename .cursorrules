@@ -1,0 +1,133 @@
+# .cursorrules
+
+# 📌 Project: Allora Vibration Logging - WT901BLE68 Sensor
+
+context:
+  - Project: Allora Yacht Shaft Vibration Monitoring.
+  - Device: WT901BLE68 (9-axis IMU by WitMotion).
+  - Uses 3-axis accelerometer only for vibration checks.
+  - Ignore gyroscope, quaternion, magnetometer for vibration.
+  - Logs are tab-separated `.txt` files with time, AccX(g), AccY(g), AccZ(g).
+  - Calculate Acc_total = sqrt(AccX^2 + AccY^2 + AccZ^2).
+  - Output Mean, Std Dev, Peak for each run.
+  - Typical config: 100–200 Hz bandwidth, 50–100 Hz return rate.
+  - Location: Taped to floor panel in power management space above port stern tube.
+  - Normal: idle ~1.01g; cruise ~1.03g; 0.2–0.3g increase means re-check shaft.
+  - Compare each run to baseline and log to `vibration_log.csv` with timestamp, RPM, speed, notes.
+  - Reference: [WT901 User Manual](https://wit-motion.yolasite.com/resources/WT901BLECL%20RS232%20Series%20User%20Manual.pdf)
+  - This project processes time-series data logs captured from the WT901BLE68 module.
+  - Typical logs are tab-delimited `.txt` files with columns like:
+    - time (timestamp)
+    - AccX(g), AccY(g), AccZ(g)
+    - Gyro data and magnetometer data can exist but are ignored for vibration analysis.
+  - The main metric of interest is `Acc_total` = sqrt(AccX(g)^2 + AccY(g)^2 + AccZ(g)^2).
+  - For every capture, we calculate:
+    - Mean Acc (g)
+    - Std Dev (g)
+    - Peak Acc (g)
+  - We trend these over time in a Google Sheet or local CSV log.
+  
+
+rules:
+  - Always parse the time column as datetime.
+  - Drop any rows with invalid timestamps.
+  - Use numpy for square root and stats.
+  - The vibration log spot is the port stern tube area, floor panel above the shaft, taped for repeatability.
+  - Typical steady running mean vibration is ~1.03g; idle is ~1.01g.
+  - A significant increase in mean or peak indicates shaft misalignment or prop imbalance.
+  - When comparing readings, note RPM, speed, and timestamp.
+  - Automate adding each run's results to `vibration_log.csv`.
+
+requirements:
+  - Python 3
+  - pandas and numpy
+  - Scripts must run inside a virtual environment (.venv).
+
+tips:
+  - Always activate `.venv` before running.
+  - Example command: `source .venv/bin/activate && python calcvib.py test.txt`
+  - Use Automator or bash wrappers for drag-and-drop usability.
+  - Output should always include: filename, mean, std dev, peak, timestamp.
+
+example_file:
+  - Filename: 20250630062554 read 4 5kts.txt
+  - Typical line:
+    time\tAccX(g)\tAccY(g)\tAccZ(g)\t...
+    2025-6-30 6:25:54.001\t-0.010\t0.020\t1.002\t...
+
+next_steps:
+  - Automate sync with Google Sheets if needed.
+  - Connect to WT901BLE68 devicde via bluetooth directly
+  - Keep vibration_log.csv updated.
+  - Compare new readings vs baseline for maintenance decisions.
+
+# EOF
+
+
+
+
+Key device points:
+	•	The WT901BLE68 is a wireless 9-axis IMU module by WitMotion.
+	•	It provides 3-axis accelerometer, 3-axis gyroscope, 3-axis magnetometer, plus temperature, pressure, and orientation quaternions.
+	•	For vibration logging, only AccX(g), AccY(g), and AccZ(g) are used.
+	•	The module’s sampling rate and bandwidth can be configured via its app or API:
+	•	Typical vibration checks use 100–200 Hz bandwidth.
+	•	Return rate can be 50–100 Hz for meaningful resolution.
+	•	Vibration calculations ignore gyro and mag data — they are for attitude and heading only.
+
+References for dev work:
+	•	Official doc: WitMotion WT901BLE68 Datasheet
+	•	Python examples: WitMotion Python GitHub
+	•	BLE and serial output options: uses standard 0x55 data frames.
+
+⸻
+
+📌 Add Allora-specific yacht context
+
+Allora technical details (relevant):
+	•	Vessel: 121-foot Benetti.
+	•	Twin CAT C32 engines driving conventional prop shafts.
+	•	Primary vibration issue: shaft imbalance, propeller imbalance, or misalignment.
+	•	Monitoring zone: power management room deck plate above port stern tube near propeller exit.
+	•	Normal running mean vibration ~1.03 g at 11–12 knots.
+	•	Idle mean vibration ~1.01 g.
+	•	A significant increase (>0.2 g mean) indicates worsening imbalance or shaft wear.
+	•	Target use: detect trend worsening during East Coast runs to NYC.
+	•	Vibration data feeds a daily log used for maintenance planning.
+
+⸻
+
+📌 WT901BLE68 BLE Data Format Discovery (2024-12-19)
+
+CRITICAL FINDINGS:
+	•	Device uses CUSTOM 0x55 0x61 frame format (NOT standard 0x55 0x51)
+	•	Each BLE notification is 16 bytes (not 11 bytes as expected)
+	•	Frame structure: [0x55][0x61][AccX_L][AccX_H][AccY_L][AccY_H][AccZ_L][AccZ_H][...]
+	•	Acceleration data in positions 2-7 (bytes 2-3, 4-5, 6-7)
+	•	Uses standard WT901 scaling: 16-bit signed int / 32768.0 * 16g range
+	•	Data rate: ~1000+ packets/second (very high frequency)
+
+PARSING SOLUTION:
+	•	Updated wt901_live_graph.py to handle both 0x55 0x51 and 0x55 0x61 formats
+	•	Modified parse_wt901_data() to extract acceleration from 16-byte frames
+	•	Updated data_handler() to process 16-byte chunks correctly
+	•	Successfully extracting: AccX, AccY, AccZ, Acc_total values
+
+TYPICAL READINGS (stationary device):
+	•	AccX: -0.10g to -0.11g (small negative offset)
+	•	AccY: -0.08g to -0.09g (small negative offset)  
+	•	AccZ: 0.99g to 1.01g (gravity, normal)
+	•	Acc_total: 1.00g to 1.02g (normal baseline)
+
+DEBUGGING NOTES:
+	•	Raw BLE notifications show: "55 61 XX XX XX XX XX XX 00 00 00 00 00 00 XX XX"
+	•	Last 8 bytes appear to be zeros or small values (possibly gyro/temp data)
+	•	0x61 is NOT a standard WT901 frame type - this is a custom format
+	•	Device may be in "extended" or "custom" output mode
+
+LIVE GRAPHING STATUS:
+	•	Data parsing: ✅ WORKING (thousands of packets processed)
+	•	Real-time display: ✅ WORKING (background threading + file messaging)
+	•	Solution: wt901_live_graph_v2.py uses background BLE thread + file-based messaging
+	•	Architecture: BLE thread → JSON files → GUI thread → matplotlib animation
+	•	Performance: 50-point data batches, 100ms animation interval, 1000+ packets/sec
